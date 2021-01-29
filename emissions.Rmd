@@ -95,17 +95,33 @@ vt_blkgrps_sf <- vt_blkgrps_sf %>%
   # filter(POPSlabel != "No Pops of Concern")
 
 # create summary stats of pollutant values by municipality
+# muniEmissions <- vt_blkgrps_sf %>%
+#   as.data.frame() %>% 
+#   select(TOWN, PM25_19, DSLPM_19, PTRAF_19) %>% 
+#   group_by(TOWN) %>% 
+#   summarize(across(.cols = everything(), 
+#                    list(min = min, mean = mean, max = max),
+#                    na.rm = TRUE,
+#                    .names = "{.col}.{.fn}")) %>% 
+#   mutate(across(ends_with("mean"), 
+#                 ~percent_rank(.x)*100,
+#                 .names = "pctrank_{.col}"))
+
 muniEmissions <- vt_blkgrps_sf %>%
-  as.data.frame() %>% 
   select(TOWN, PM25_19, DSLPM_19, PTRAF_19) %>% 
-  group_by(TOWN) %>% 
-  summarize(across(.cols = everything(), 
-                   list(min = min, mean = mean, max = max),
-                   na.rm = TRUE,
-                   .names = "{.col}.{.fn}")) %>% 
+  mutate(OldArea = as.numeric(st_area(.))) %>% 
+  st_intersection(vt_towns) %>% 
+  mutate(NewArea = as.numeric(st_area(.)),
+         Prop = NewArea/OldArea) %>% 
+  as.data.frame() %>% 
+  group_by(NAMELSAD) %>% 
+  summarize(across(.cols = c(PM25_19, DSLPM_19, PTRAF_19), 
+                   ~weighted.mean(.x, w = Prop, na.rm = TRUE),
+                   .names = "{.col}.mean")) %>% 
   mutate(across(ends_with("mean"), 
                 ~percent_rank(.x)*100,
-                .names = "pctrank_{.col}"))
+                .names = "pctrank_{.col}")) %>% 
+  rename(TOWN = NAMELSAD)
 
 # create summary of pollutant values by house district
 houseEmissions <- vt_blkgrps_sf %>%
@@ -677,13 +693,13 @@ PM25popAvg <- vt_blkgrp_sf %>%
   summarize(PM25wMean = weighted.mean(x = PM25_19, w = Pop, na.rm = TRUE),
             PM25Mean = mean(PM25_19, na.rm = TRUE)) %>% 
   spread(key = Group, value = PM25wMean) %>% 
-  transmute(Minority = (minorityE/PM25Mean - 1)*100,
+  transmute(Minority = (minorityE/totalpopE - 1)*100,
          #Minority_NHW = (minorityE/nhwhitepopE - 1)*100,
-         `Limited English HH` = (eng_limitE/PM25Mean - 1)*100,
-         `Low Income` = (num2povE/PM25Mean - 1)*100,
-         `No HS Dip` = (lthsE/PM25Mean - 1)*100,
-         `Under 5` = (under5E/PM25Mean - 1)*100,
-         `Over 64` = (over64E/PM25Mean - 1)*100) %>%
+         `Limited English HH` = (eng_limitE/eng_hhE - 1)*100,
+         `Low Income` = (num2povE/totalpopE - 1)*100,
+         `No HS Dip` = (lthsE/totalpopE - 1)*100,
+         `Under 5` = (under5E/totalpopE - 1)*100,
+         `Over 64` = (over64E/totalpopE - 1)*100) %>%
   gather(key = Group, value = Pct)
 
 # # clean up
@@ -750,13 +766,13 @@ DPMpopAvg <- vt_blkgrp_sf %>%
   summarize(DPMwMean = weighted.mean(x = DSLPM_19, w = Pop, na.rm = TRUE),
             DPMMean = mean(DSLPM_19, na.rm = TRUE)) %>% 
   spread(key = Group, value = DPMwMean) %>% 
-  transmute(Minority = (minorityE/DPMMean - 1)*100,
+  transmute(Minority = (minorityE/totalpopE - 1)*100,
          #Minority_NHW = (minorityE/nhwhitepopE - 1)*100,
-         `Limited English HH` = (eng_limitE/DPMMean - 1)*100,
-         `Low Income` = (num2povE/DPMMean - 1)*100,
-         `No HS Dip` = (lthsE/DPMMean - 1)*100,
-         `Under 5` = (under5E/DPMMean - 1)*100,
-         `Over 64` = (over64E/DPMMean - 1)*100) %>%
+         `Limited English HH` = (eng_limitE/eng_hhE - 1)*100,
+         `Low Income` = (num2povE/totalpopE - 1)*100,
+         `No HS Dip` = (lthsE/totalpopE - 1)*100,
+         `Under 5` = (under5E/totalpopE - 1)*100,
+         `Over 64` = (over64E/totalpopE - 1)*100) %>%
   gather(key = Group, value = Pct)
 
 # # clean up
@@ -826,13 +842,13 @@ PTRAFpopAvg <- vt_blkgrp_sf %>%
   summarize(DPMwMean = weighted.mean(x = PTRAF_19, w = Pop, na.rm = TRUE),
             DPMMean = mean(PTRAF_19, na.rm = TRUE)) %>% 
   spread(key = Group, value = DPMwMean) %>% 
-  transmute(`People of Color` = (minorityE/DPMMean - 1)*100,
+  transmute(`People of Color` = (minorityE/totalpopE - 1)*100,
          #Minority_NHW = (minorityE/nhwhitepopE - 1)*100,
-         `Limited English HH` = (eng_limitE/DPMMean - 1)*100,
-         `Low Income` = (num2povE/DPMMean - 1)*100,
-         `No HS Diploma` = (lthsE/DPMMean - 1)*100,
-         `Under 5` = (under5E/DPMMean - 1)*100,
-         `Over 64` = (over64E/DPMMean - 1)*100) %>%
+         `Limited English HH` = (eng_limitE/eng_hhE - 1)*100,
+         `Low Income` = (num2povE/totalpopE - 1)*100,
+         `No HS Diploma` = (lthsE/totalpopE - 1)*100,
+         `Under 5` = (under5E/totalpopE - 1)*100,
+         `Over 64` = (over64E/totalpopE - 1)*100) %>%
   gather(key = Group, value = Pct)
 
 # clean up
@@ -900,7 +916,7 @@ vt_towns %>%
   as.data.frame() %>% 
   arrange(NAME) %>% 
   filter(NAME != "County subdivisions not defined") %>%
-  select(NAME, PM25_19.mean, pctrank_PM25_19.mean, DSLPM_19.mean,
+  select(NAMELSAD, PM25_19.mean, pctrank_PM25_19.mean, DSLPM_19.mean,
          pctrank_DSLPM_19.mean, PTRAF_19.mean, pctrank_PTRAF_19.mean) %>% 
   datatable(., rownames = FALSE, options = list(pageLength = 10), 
             container = sketch1) %>% 
