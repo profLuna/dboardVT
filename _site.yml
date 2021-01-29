@@ -1,0 +1,31 @@
+name: "VT_dashboard"
+navbar:
+  title: "Investing for Equity in Vermont"
+  type: inverse
+  left:
+    - text: "Home"
+      icon: fa-home
+      href: index.html
+    - text: "Transport"
+      icon: fa-bus
+      href: transport.html
+    - text: "Emissions"
+      icon: fa-industry
+      href: emissions.html
+    - text: "Heat"
+      icon: fa-thermometer-full
+      href: heat.html
+    - text: "Evacuation"
+      icon: fa-bolt
+      href: evacuation.html
+    - text: "About"
+      icon: fa-info
+      href: about.html
+output:
+  html_document:
+    theme: readable
+    self_contained: false
+    anchor_sections: false
+    lib_dir: libs
+    includes:
+      in_header: favicon.html
