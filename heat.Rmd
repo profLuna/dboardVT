@@ -114,7 +114,7 @@ vt_blkgrpLST_sf <- vt_blkgrpLST_sf %>%
 #                 ~percent_rank(.x)*100,
 #                 .names = "pctrank_{.col}"))
 
-muniLST <- vt_blkgrps_sf %>%
+muniLST <- vt_blkgrpLST_sf %>%
   select(TOWN, meanAvgLST, UHI24avg, meanNightLST) %>% 
   mutate(OldArea = as.numeric(st_area(.))) %>% 
   st_intersection(vt_towns) %>% 
