@@ -535,24 +535,29 @@ leaflet(width = "100%") %>%
 # palHwy <- colorQuantile(
 #   palette = "YlOrRd",
 #   domain = vt_blkgrps_sf_Hwy$AvgStopHeadway,
-#   n = 5, 
-#   right = TRUE)
+#   n = 5)
 
-# workaround to deal with "Error in cut.default(x, binsToUse, labels = FALSE, include.lowest = TRUE, : 'breaks' are not unique"
-quantileNum <- 5
+# create color palette
+palHwy <- colorBin(
+  palette = "YlOrRd",
+  domain = vt_blkgrps_sf_Hwy$AvgStopHeadway,
+  bins = 5)
 
-probs <- seq(0, 1, length.out = quantileNum + 1)
-bins <- quantile(vt_blkgrps_sf_Hwy$AvgStopHeadway,
-                 probs, na.rm = TRUE, names = FALSE)
-
-while (length(unique(bins)) != length(bins)) {
- quantileNum <- quantileNum - 1
- probs <- seq(0, 1, length.out = quantileNum + 1)
- bins <- quantile(vt_blkgrps_sf_Hwy$AvgStopHeadway, probs,
-                  na.rm = TRUE, names = FALSE)
-}
-
-palHwy <- colorBin("YlOrRd", bins = bins)
+# # workaround to deal with "Error in cut.default(x, binsToUse, labels = FALSE, include.lowest = TRUE, : 'breaks' are not unique"
+# quantileNum <- 5
+# 
+# probs <- seq(0, 1, length.out = quantileNum + 1)
+# bins <- quantile(vt_blkgrps_sf_Hwy$AvgStopHeadway,
+#                  probs, na.rm = TRUE, names = FALSE)
+# 
+# while (length(unique(bins)) != length(bins)) {
+#  quantileNum <- quantileNum - 1
+#  probs <- seq(0, 1, length.out = quantileNum + 1)
+#  bins <- quantile(vt_blkgrps_sf_Hwy$AvgStopHeadway, probs,
+#                   na.rm = TRUE, names = FALSE)
+# }
+# 
+# palHwy <- colorBin("YlOrRd", bins = bins)
 
 
 PopupHouse <- paste0("Vermont state House District ", "<b>",house_districts$REP_DIST,"</b>", " has ", "<b>",house_districts$BGs80thHwy,"</b>", " <b>Block Groups</b> with high percentages of priority populations experiencing long bus headways at the 80th percentile (", H80th," minutes) or longer.", "<br/>",
