@@ -1,0 +1,1112 @@
+---
+title: "Emissions"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, message=FALSE, warning=FALSE)
+# library(flexdashboard)
+library(tidyverse)
+library(sf)
+library(tmap)
+library(maptools)
+# library(janitor)
+# library(kableExtra)
+library(tigris)
+options(tigris_use_cache = TRUE, tigris_class = "sf")
+library(leaflet)
+library(leaflet.extras)
+library(DT)
+# set common data table options
+# options(DT.options = list(scrollY="100vh", lengthMenu = c(5, 10, 15, 20)))
+options(DT.options = list(lengthMenu = c(10, 20, 50, 100)))
+library(highcharter)
+library(rmapshaper)
+```
+
+```{r data, include=FALSE, cache=TRUE}
+# load("DATA/ne_layers.rds")
+ma_blkgrps_sf <- readRDS(file = "../DATA/ma_blkgrps_sf_CUM.Rds")
+
+#create layer of municipalities
+ma_towns <- county_subdivisions("MA") %>% 
+  st_transform(., crs = 4326) %>% 
+  select(NAME,NAMELSAD)
+
+# Assign municipality names to block groups
+ma_blkgrps_sf <- county_subdivisions("MA") %>% 
+  st_transform(., crs = st_crs(ma_blkgrps_sf)) %>% 
+  transmute(TOWN = NAME) %>% 
+  st_join(ma_blkgrps_sf, ., largest = TRUE) %>% 
+  mutate(NAME = str_remove_all(NAME, ", Massachusetts")) %>% 
+  st_transform(., crs = 4326)
+
+# create layer of state house districts
+house_districts <- st_read("../DATA/shapefiles/house2012",
+                            "HOUSE2012_POLY") %>% 
+  select(REP_DIST) %>% 
+  st_transform(., crs = 4326) %>% 
+  st_make_valid()
+
+# create layer of state senate districts
+senate_districts <- st_read("../DATA/shapefiles/senate2012",
+                            "SENATE2012_POLY") %>% 
+  select(SEN_DIST) %>% 
+  st_transform(., crs = 4326) %>% 
+  st_make_valid()
+
+# Assign state house district names to block groups
+ma_blkgrps_sf <- house_districts %>% 
+  select(REP_DIST) %>% 
+  st_join(ma_blkgrps_sf, ., largest = TRUE)
+
+# Assign state senate district names to block groups
+ma_blkgrps_sf <- senate_districts %>% 
+  select(SEN_DIST) %>% 
+  st_join(ma_blkgrps_sf, ., largest = TRUE)
+
+
+# Create labeling variables to identify pops of a concern in a given block group that contributed to cumulative burden score
+ma_blkgrps_sf <- ma_blkgrps_sf %>% 
+  mutate(Minority80th = if_else(percent_rank(minority_pctE) >= 0.8, "People of Color","NA"),
+    Under5_80th = if_else(percent_rank(pct_under5E) >= 0.8, "Under 5", "NA"),
+    Under18_80th = if_else(percent_rank(pct_under18E) >= 0.8, "Under 18", "NA"),
+    Over64_80th = if_else(percent_rank(pct_over64E) >= 0.8, "Over 64", "NA"),
+    lths80th = if_else(percent_rank(pct_lthsE) >= 0.8, "No HS Diploma", "NA"),
+    pct2pov80th = if_else(percent_rank(pct2povE) >= 0.8, "Low Income", "NA"),
+    eng_limit_pct80th = if_else(percent_rank(eng_limit_pctE) >= 0.8, "Limited English HH", "NA"),
+    MA_INCOME_80th = if_else(MA_INCOME == "I", "MA Low Income", "NA"),
+    MA_MINORITY_80th = if_else(MA_MINORITY == "M", "MA Minority", "NA"),
+    MA_ENGLISH_80th = if_else(MA_ENGLISH == "E", "MA Limited English HH", "NA"),
+    POPSlabel = gsub("^,*|(?<=,),|,*$", "", # get rid of extra commas
+    str_remove_all( # get rid of NAs
+      paste(Minority80th,
+            Under5_80th,
+            Under18_80th,
+            Over64_80th,
+            lths80th,
+            pct2pov80th,
+            eng_limit_pct80th,
+            MA_INCOME_80th,
+            MA_MINORITY_80th,
+            MA_ENGLISH_80th, sep = ","),
+      pattern = "NA"), 
+    perl=T
+    ),
+    POPSlabel = if_else(POPSlabel == "", "No Pops of Concern", POPSlabel),
+    PM25pctile = percent_rank(PM25_19),
+    DPMpctile = percent_rank(DSLPM_19),
+    PTRAFpctile = percent_rank(PTRAF_19)
+    )
+  # filter(POPSlabel != "No Pops of Concern")
+
+# create layer of EJ polygons
+EJbgs <- ma_blkgrps_sf %>% 
+  filter(MA_INCOME == "I" | MA_MINORITY == "M" | MA_ENGLISH == "E") %>% 
+  mutate(EJlabel = gsub("^,*|(?<=,),|,*$", "", # get rid of extra commas
+    str_remove_all( # get rid of NAs
+      paste(MA_INCOME_80th,
+            MA_MINORITY_80th,
+            MA_ENGLISH_80th, sep = ","),
+      pattern = "NA"), 
+    perl=T
+    )) %>% 
+  select(NAME, TOWN, REP_DIST, SEN_DIST, EJlabel, PM25_19, DSLPM_19, PTRAF_19, PM25pctile, DPMpctile, PTRAFpctile) %>% 
+  ms_simplify(., keep = 0.1, keep_shapes = TRUE)
+
+# create summary stats of pollutant values by municipality
+muniEmissions <- ma_blkgrps_sf %>%
+  as.data.frame() %>% 
+  select(TOWN, PM25_19, DSLPM_19, PTRAF_19) %>% 
+  group_by(TOWN) %>% 
+  summarize(across(.cols = everything(), 
+                   list(min = min, mean = mean, max = max),
+                   na.rm = TRUE,
+                   .names = "{.col}.{.fn}")) %>% 
+  mutate(across(ends_with("mean"), 
+                ~percent_rank(.x)*100,
+                .names = "pctrank_{.col}"))
+
+# create summary of pollutant values by house district
+houseEmissions <- ma_blkgrps_sf %>%
+  as.data.frame() %>% 
+  select(REP_DIST, PM25_19, DSLPM_19, PTRAF_19) %>% 
+  group_by(REP_DIST) %>% 
+  summarize(across(.cols = everything(), 
+                   list(min = min, mean = mean, max = max),
+                   na.rm = TRUE,
+                   .names = "{.col}.{.fn}")) %>% 
+  mutate(across(ends_with("mean"), 
+                ~percent_rank(.x)*100,
+                .names = "pctrank_{.col}")) %>% 
+  drop_na()
+
+# create summary of pollutant values by senate district
+senateEmissions <- ma_blkgrps_sf %>%
+  as.data.frame() %>% 
+  select(SEN_DIST, PM25_19, DSLPM_19, PTRAF_19) %>% 
+  group_by(SEN_DIST) %>% 
+  summarize(across(.cols = everything(), 
+                   list(min = min, mean = mean, max = max),
+                   na.rm = TRUE,
+                   .names = "{.col}.{.fn}")) %>% 
+  mutate(across(ends_with("mean"), 
+                ~percent_rank(.x)*100,
+                .names = "pctrank_{.col}")) %>% 
+  drop_na()
+
+# Create counts of block groups at 80th percentile PM2.5 by jurisdiction
+muniPM25_80th <- ma_blkgrps_sf %>% 
+  as.data.frame() %>% 
+  filter(percent_rank(PM25_19) >= 0.8 & POPSlabel != "No Pops of Concern") %>% 
+  group_by(TOWN) %>% 
+  summarize(BGs80thPM25 = n())
+
+housePM25_80th <- ma_blkgrps_sf %>% 
+  as.data.frame() %>% 
+  filter(percent_rank(PM25_19) >= 0.8 & POPSlabel != "No Pops of Concern") %>% 
+  group_by(REP_DIST) %>% 
+  summarize(BGs80thPM25 = n())
+
+senatePM25_80th <- ma_blkgrps_sf %>% 
+  as.data.frame() %>% 
+  filter(percent_rank(PM25_19) >= 0.8 & POPSlabel != "No Pops of Concern") %>% 
+  group_by(SEN_DIST) %>% 
+  summarize(BGs80thPM25 = n())
+
+# Create counts of block groups at 80th percentile DPM by jurisdiction
+muniDPM_80th <- ma_blkgrps_sf %>% 
+  as.data.frame() %>% 
+  filter(percent_rank(DSLPM_19) >= 0.8 & POPSlabel != "No Pops of Concern") %>% 
+  group_by(TOWN) %>% 
+  summarize(BGs80thDPM = n())
+
+houseDPM_80th <- ma_blkgrps_sf %>% 
+  as.data.frame() %>% 
+  filter(percent_rank(DSLPM_19) >= 0.8 & POPSlabel != "No Pops of Concern") %>% 
+  group_by(REP_DIST) %>% 
+  summarize(BGs80thDPM = n())
+
+senateDPM_80th <- ma_blkgrps_sf %>% 
+  as.data.frame() %>% 
+  filter(percent_rank(DSLPM_19) >= 0.8 & POPSlabel != "No Pops of Concern") %>% 
+  group_by(SEN_DIST) %>% 
+  summarize(BGs80thDPM = n())
+
+# Create counts of block groups at 80th percentile PTRAF by jurisdiction
+muniPTRAF_80th <- ma_blkgrps_sf %>% 
+  as.data.frame() %>% 
+  filter(percent_rank(PTRAF_19) >= 0.8 & POPSlabel != "No Pops of Concern") %>% 
+  group_by(TOWN) %>% 
+  summarize(BGs80thPTRAF = n())
+
+housePTRAF_80th <- ma_blkgrps_sf %>% 
+  as.data.frame() %>% 
+  filter(percent_rank(PTRAF_19) >= 0.8 & POPSlabel != "No Pops of Concern") %>% 
+  group_by(REP_DIST) %>% 
+  summarize(BGs80thPTRAF = n())
+
+senatePTRAF_80th <- ma_blkgrps_sf %>% 
+  as.data.frame() %>% 
+  filter(percent_rank(PTRAF_19) >= 0.8 & POPSlabel != "No Pops of Concern") %>% 
+  group_by(SEN_DIST) %>% 
+  summarize(BGs80thPTRAF = n())
+
+# join stats to jurisdiction layers
+ma_towns <- ma_towns %>% 
+  left_join(., muniEmissions, by = c("NAME" = "TOWN")) %>% 
+  left_join(., muniPM25_80th, by = c("NAME" = "TOWN")) %>% 
+  left_join(., muniDPM_80th, by = c("NAME" = "TOWN")) %>% 
+  left_join(., muniPTRAF_80th, by = c("NAME" = "TOWN")) %>% 
+  replace_na(list(BGs80thPM25 = 0, BGs80thDPM = 0, BGs80thPTRAF = 0)) %>% 
+  ms_simplify(., keep = 0.1, keep_shapes = TRUE)
+
+house_districts <- house_districts %>% 
+  left_join(., houseEmissions, by = "REP_DIST") %>% 
+  left_join(., housePM25_80th, by = "REP_DIST") %>% 
+  left_join(., houseDPM_80th, by = "REP_DIST") %>% 
+  left_join(., housePTRAF_80th, by = "REP_DIST") %>% 
+  replace_na(list(BGs80thPM25 = 0, BGs80thDPM = 0, BGs80thPTRAF = 0)) %>% 
+  ms_simplify(., keep = 0.1, keep_shapes = TRUE)
+
+senate_districts <- senate_districts %>% 
+  left_join(., senateEmissions, by = "SEN_DIST") %>% 
+  left_join(., senatePM25_80th, by = "SEN_DIST") %>% 
+  left_join(., senateDPM_80th, by = "SEN_DIST") %>% 
+  left_join(., senatePTRAF_80th, by = "SEN_DIST") %>% 
+  replace_na(list(BGs80thPM25 = 0, BGs80thDPM = 0, BGs80thPTRAF = 0)) %>% 
+  ms_simplify(., keep = 0.1, keep_shapes = TRUE)
+
+# create layer of ma_blkgrp_sf for 80th percentile
+ma_blkgrps_sf_PM25 <- ma_blkgrps_sf %>% 
+  filter(percent_rank(PM25_19) >= 0.8 & POPSlabel != "No Pops of Concern") %>% 
+  select(NAME, REP_DIST, SEN_DIST, TOWN, POPSlabel, PM25_19, PM25pctile) %>% 
+  ms_simplify(., keep = 0.1, keep_shapes = TRUE)
+
+ma_blkgrps_sf_DPM <- ma_blkgrps_sf %>% 
+  filter(percent_rank(DSLPM_19) >= 0.8 & POPSlabel != "No Pops of Concern") %>% 
+  select(NAME, REP_DIST, SEN_DIST, TOWN, POPSlabel, DSLPM_19, DPMpctile) %>% 
+  ms_simplify(., keep = 0.1, keep_shapes = TRUE)
+
+ma_blkgrps_sf_PTRAF <- ma_blkgrps_sf %>% 
+  filter(percent_rank(PTRAF_19) >= 0.8 & POPSlabel != "No Pops of Concern") %>% 
+  select(NAME, REP_DIST, SEN_DIST, TOWN, POPSlabel, PTRAF_19, PTRAFpctile) %>% 
+  ms_simplify(., keep = 0.1, keep_shapes = TRUE)
+
+# clean up
+rm(list = ls(pattern = paste("muni", "_80th", "Emissions", 
+                             "ma_blkgrps_sf$", sep = "|")))
+
+# # reduce number of variables in ma_blkgrps_sf for faster loading
+# ma_blkgrps_sf <- ma_blkgrps_sf %>%
+#   select(BurdenCount, NAME, REP_DIST, SEN_DIST, TOWN, BURDENSlabel, POPSlabel)
+```
+
+Transportation accounts for a significant share of air pollution. 
+
+Concentrations of hazardous air pollutants and associated risks are highest in the eastern half of the state and around the urbanized areas in central and western Massachusetts. Limited English speaking households and people of color are by far the most exposed to higher levels of air pollutants and are living in close proximity to high traffic corridors.
+
+These interactive figures identify communities across Massachusetts that are most overburdened and most vulnerable to three transportation-related burdens: PM~2.5~, Diesel Particulate Matter (DPM), and Traffic Volume and Proximity.
+
+<br>
+
+## Emissions & Priority Populations by Census block group {.tabset}
+
+### PM2.5
+```{r mapPM25, fig.align="left", fig.cap="Map of Census block groups with the highest concentrations of one or more priority populations AND highest PM2.5 concentrations."}
+# create simplified towns layer for faster mapping
+# download state outline
+ma_state <- states(cb = TRUE) %>% 
+  filter(NAME == "Massachusetts")
+# filter out extra polygons, clip out boundaries from water, simplify
+ma_towns_simple <- ma_towns %>% 
+  filter(NAME != "County subdivisions not defined") %>% 
+  ms_clip(., ma_state) %>% 
+  ms_simplify(., keep = 0.1, keep_shapes = TRUE)
+
+# create color palette
+palPM25 <- colorQuantile(
+  palette = "YlOrRd",
+  domain = ma_blkgrps_sf_PM25$PM25_19,
+  n = 5)
+
+# binpalPM25 <- colorBin(
+#   palette = "YlOrRd",
+#   domain = ma_blkgrps_sf_PM25$PM25_19,
+#   bins = 5, pretty = FALSE
+# )
+
+PopupEJ_PM25 <- paste0(EJbgs$NAME, "<br/>",
+                      "<b>Town:</b> ", EJbgs$TOWN, "<br/>",
+                  "<b>State House District:</b> ", EJbgs$REP_DIST, "<br/>",
+                  "<b>State Senate District:</b> ", EJbgs$SEN_DIST, "<br/>",
+                      "<b>Environmental Justice categories: </b>", EJbgs$EJlabel, "<br/>",
+                  "<b>PM<sub>2.5</sub> (&mu;g/m<sup>3</sup>):</b> ", round(EJbgs$PM25_19,2), "<br/>",
+                      "<b>PM<sub>2.5</sub> percentile: </b>", round(EJbgs$PM25pctile*100,0))
+
+PopupHouse <- paste0("Massachusetts state House District ", "<b>",house_districts$REP_DIST,"</b>", " has ", "<b>",house_districts$BGs80thPM25,"</b>", " <b>Block Groups</b> with high percentages of priority populations experiencing <b>PM<sub>2.5</sub></b> concentrations at the 80th percentile or higher.", "<br/>",
+                     "<b>MINIMUM PM<sub>2.5</sub> (&mu;g/m<sup>3</sup>):</b> ", round(house_districts$PM25_19.min,2), "<br/>",
+                     "<b>MEAN PM<sub>2.5</sub> (&mu;g/m<sup>3</sup>):</b> ", round(house_districts$PM25_19.mean,2), "<br/>",
+                     "<b>MAXIMUM PM<sub>2.5</sub> (&mu;g/m<sup>3</sup>):</b> ", round(house_districts$PM25_19.max,2))
+
+PopupSenate <- paste0("Massachusetts state Senate District ", "<b>",senate_districts$SEN_DIST,"</b>", " has ", "<b>",senate_districts$BGs80thPM25,"</b>", " <b>Block Groups</b> with high percentages of priority populations experiencing <b>PM<sub>2.5</sub></b> concentrations at the 80th percentile or higher.", "<br/>",
+                     "<b>MINIMUM PM<sub>2.5</sub> (&mu;g/m<sup>3</sup>):</b> ", round(senate_districts$PM25_19.min,2), "<br/>",
+                     "<b>MEAN PM<sub>2.5</sub> (&mu;g/m<sup>3</sup>):</b> ", round(senate_districts$PM25_19.mean,2), "<br/>",
+                     "<b>MAXIMUM PM<sub>2.5</sub> (&mu;g/m<sup>3</sup>):</b> ", round(senate_districts$PM25_19.max,2))
+
+Popup <- paste0(ma_blkgrps_sf_PM25$NAME, "<br/>",
+                "<b>State House District:</b> ", ma_blkgrps_sf_PM25$REP_DIST, "<br/>",
+                  "<b>State Senate District:</b> ", ma_blkgrps_sf_PM25$SEN_DIST, "<br/>",
+                      "<b>Town:</b> ", ma_blkgrps_sf_PM25$TOWN, "<br/>",
+                      "<b>PM<sub>2.5</sub> (&mu;g/m<sup>3</sup>):</b> ", round(ma_blkgrps_sf_PM25$PM25_19,2), "<br/>",
+         "<b>PM<sub>2.5</sub> percentile:</b> ", round(ma_blkgrps_sf_PM25$PM25pctile*100,0), "<br/>",
+                      "<b>Priority Populations: </b>", ma_blkgrps_sf_PM25$POPSlabel)
+
+leaflet(width = "100%") %>% 
+  addProviderTiles(providers$Stamen.TonerLite) %>% 
+  addPolygons(data = ma_towns_simple,
+              weight = 0.7,
+              opacity = 1,
+              color = "gray",
+              fillOpacity = 0,
+              label=~NAME, popup=~NAMELSAD, group='muni') %>% 
+  addPolygons(data = house_districts,
+              weight = 2,
+              opacity = 1,
+              color = "blue",
+              dashArray = 3,
+              fillOpacity = 0,
+              # fillColor = "blue",
+              label = ~REP_DIST,
+              popup = PopupHouse,
+              highlight = highlightOptions(
+                weight = 5,
+                color = "#666",
+                dashArray = "",
+                fillOpacity = 0,
+                bringToFront = TRUE),
+              group = "State House Districts") %>% 
+  addPolygons(data = senate_districts,
+              # fillColor = "red",
+              weight = 2,
+              opacity = 1,
+              color = "green",
+              dashArray = 3,
+              fillOpacity = 0,
+              label=~SEN_DIST,
+              popup = PopupSenate,
+              highlight = highlightOptions(
+                weight = 5,
+                color = "#666",
+                dashArray = "",
+                fillOpacity = 0,
+                bringToFront = TRUE),
+              group = "State Senate Districts") %>% 
+  addPolygons(data = EJbgs,
+              # fillColor = "red",
+              weight = 2,
+              opacity = 1,
+              color = "purple",
+              dashArray = 3,
+              fillOpacity = 0,
+              label=~TOWN,
+              popup = PopupEJ_PM25,
+              highlight = highlightOptions(
+                weight = 5,
+                color = "#666",
+                dashArray = "",
+                fillOpacity = 0,
+                bringToFront = TRUE),
+              group = "Environmental Justice communities") %>% 
+  addPolygons(data = ma_blkgrps_sf_PM25, 
+              color = ~palPM25(PM25_19),
+              weight = 0.5,
+              opacity = 0.7,
+              # color = "white",
+              dashArray = 3,
+              fillOpacity = 0.7,
+              label=~TOWN, 
+              popup = Popup,
+              highlight = highlightOptions(
+                weight = 5,
+                color = "#666",
+                dashArray = "",
+                fillOpacity = 0.7,
+                bringToFront = TRUE)) %>% 
+  addLegend(title = "Highest PM<sub>2.5</sub> (&mu;g/m<sup>3</sup>)<br>for Priority Populations", 
+            pal = palPM25,
+            values = round(ma_blkgrps_sf_PM25$PM25_19,2),
+            position = "bottomleft",
+            labFormat = function(type, cuts, p) {
+              n = length(cuts)
+              p = paste0(round(p * 100), '%')
+              cuts = paste0(formatC(cuts[-n]), " - ", formatC(cuts[-1]))
+              # mouse over the legend labels to see the percentile ranges
+              paste0(
+                '<span title="', p[-n], " - ", p[-1], '">', cuts,
+                '</span>'
+                )
+              }) %>% 
+  setView(lng = -71.7, 42.1, zoom = 8) %>% 
+  # addMiniMap() %>% 
+  addScaleBar(position = "bottomright") %>% 
+  addSearchFeatures(targetGroups  = 'muni', 
+                    options = searchFeaturesOptions(zoom=14, openPopup=TRUE, hideMarkerOnCollapse=T)) %>% 
+  addLayersControl(
+    overlayGroups = c("Environmental Justice communities", "State House Districts","State Senate Districts"),
+    options = layersControlOptions(collapsed = TRUE)
+  ) %>% 
+  hideGroup(c("Environmental Justice communities", "State House Districts","State Senate Districts"))
+```
+
+<br>
+
+<br>
+
+### DPM
+```{r mapDPM, fig.align="left", fig.cap="Map of Census block groups with the highest concentrations of one or more priority populations AND highest Diesel Particullate Matter (DPM) concentrations."}
+# create color palette
+palDPM <- colorQuantile(
+  palette = "YlOrRd",
+  domain = ma_blkgrps_sf_DPM$DSLPM_19,
+  n = 5)
+
+# binpalPM25 <- colorBin(
+#   palette = "YlOrRd",
+#   domain = ma_blkgrps_sf_PM25$PM25_19,
+#   bins = 5, pretty = FALSE
+# )
+
+PopupEJ_DPM <- paste0(EJbgs$NAME, "<br/>",
+                      "<b>Town:</b> ", EJbgs$TOWN, "<br/>",
+                  "<b>State House District:</b> ", EJbgs$REP_DIST, "<br/>",
+                  "<b>State Senate District:</b> ", EJbgs$SEN_DIST, "<br/>",
+                      "<b>Environmental Justice categories: </b>", EJbgs$EJlabel, "<br/>",
+                  "<b>DPM (&mu;g/m<sup>3</sup>):</b> ", round(EJbgs$DSLPM_19,2), "<br/>",
+                      "<b>DPM percentile: </b>", round(EJbgs$DPMpctile*100,0))
+
+PopupHouse <- paste0("Massachusetts state House District ", "<b>",house_districts$REP_DIST,"</b>", " has ", "<b>",house_districts$BGs80thDPM,"</b>", " <b>Block Groups</b> with high percentages of priority populations experiencing <b>DPM</b> concentrations at the 80th percentile or higher.", "<br/>",
+                     "<b>MINIMUM DPM (&mu;g/m<sup>3</sup>):</b> ", round(house_districts$DSLPM_19.min,2), "<br/>",
+                     "<b>MEAN DPM (&mu;g/m<sup>3</sup>):</b> ", round(house_districts$DSLPM_19.mean,2), "<br/>",
+                     "<b>MAXIMUM DPM (&mu;g/m<sup>3</sup>):</b> ", round(house_districts$DSLPM_19.max,2))
+
+PopupSenate <- paste0("Massachusetts state Senate District ", "<b>",senate_districts$SEN_DIST,"</b>", " has ", "<b>",senate_districts$BGs80thDPM,"</b>", " <b>Block Groups</b> with high percentages of priority populations experiencing <b>DPM concentrations at the 80th percentile or higher.", "<br/>",
+                     "<b>MINIMUM DPM (&mu;g/m<sup>3</sup>):</b> ", round(senate_districts$DSLPM_19.min,2), "<br/>",
+                     "<b>MEAN DPM (&mu;g/m<sup>3</sup>):</b> ", round(senate_districts$DSLPM_19.mean,2), "<br/>",
+                     "<b>MAXIMUM DPM (&mu;g/m<sup>3</sup>):</b> ", round(senate_districts$DSLPM_19.max,2))
+
+Popup <- paste0(ma_blkgrps_sf_DPM$NAME, "<br/>",
+                "<b>State House District:</b> ", ma_blkgrps_sf_DPM$REP_DIST, "<br/>",
+                  "<b>State Senate District:</b> ", ma_blkgrps_sf_DPM$SEN_DIST, "<br/>",
+                      "<b>Town:</b> ", ma_blkgrps_sf_DPM$TOWN, "<br/>",
+                      "<b>DPM (&mu;g/m<sup>3</sup>):</b> ", round(ma_blkgrps_sf_DPM$DSLPM_19,2), "<br/>",
+         "<b>DPM percentile:</b> ", round(ma_blkgrps_sf_DPM$DPMpctile*100,0), "<br/>",
+                      "<b>Priority Populations: </b>", ma_blkgrps_sf_DPM$POPSlabel)
+
+leaflet(width = "100%") %>% 
+  addProviderTiles(providers$Stamen.TonerLite) %>% 
+  addPolygons(data = ma_towns_simple,
+              weight = 0.7,
+              opacity = 1,
+              color = "gray",
+              fillOpacity = 0,
+              label=~NAME, popup=~NAMELSAD, group='muni') %>% 
+  addPolygons(data = house_districts,
+              weight = 2,
+              opacity = 1,
+              color = "blue",
+              dashArray = 3,
+              fillOpacity = 0,
+              # fillColor = "blue",
+              label = ~REP_DIST,
+              popup = PopupHouse,
+              highlight = highlightOptions(
+                weight = 5,
+                color = "#666",
+                dashArray = "",
+                fillOpacity = 0,
+                bringToFront = TRUE),
+              group = "State House Districts") %>% 
+  addPolygons(data = senate_districts,
+              # fillColor = "red",
+              weight = 2,
+              opacity = 1,
+              color = "green",
+              dashArray = 3,
+              fillOpacity = 0,
+              label=~SEN_DIST,
+              popup = PopupSenate,
+              highlight = highlightOptions(
+                weight = 5,
+                color = "#666",
+                dashArray = "",
+                fillOpacity = 0,
+                bringToFront = TRUE),
+              group = "State Senate Districts") %>% 
+  addPolygons(data = EJbgs,
+              # fillColor = "red",
+              weight = 2,
+              opacity = 1,
+              color = "purple",
+              dashArray = 3,
+              fillOpacity = 0,
+              label=~TOWN,
+              popup = PopupEJ_DPM,
+              highlight = highlightOptions(
+                weight = 5,
+                color = "#666",
+                dashArray = "",
+                fillOpacity = 0,
+                bringToFront = TRUE),
+              group = "Environmental Justice communities") %>% 
+  addPolygons(data = ma_blkgrps_sf_DPM, 
+              color = ~palDPM(DSLPM_19),
+              weight = 0.5,
+              opacity = 0.7,
+              # color = "white",
+              dashArray = 3,
+              fillOpacity = 0.7,
+              label=~TOWN, 
+              popup = Popup,
+              highlight = highlightOptions(
+                weight = 5,
+                color = "#666",
+                dashArray = "",
+                fillOpacity = 0.7,
+                bringToFront = TRUE)) %>% 
+  addLegend(title = "Highest Diesel<br>Particulate Matter (&mu;g/m<sup>3</sup>)<br>for Priority Populations", 
+            pal = palDPM,
+            values = ma_blkgrps_sf_DPM$DSLPM_19,
+            position = "bottomleft",
+            labFormat = function(type, cuts, p) {
+              n = length(cuts)
+              p = paste0(round(p * 100), '%')
+              cuts = paste0(formatC(cuts[-n], big.mark = ",", digits = 2, 
+                                    format = "f"), " - ", 
+                            formatC(cuts[-1], big.mark = ",", digits = 2, 
+                                    format = "f"))
+              }) %>% 
+  setView(lng = -71.7, 42.1, zoom = 8) %>% 
+  # addMiniMap() %>% 
+  addScaleBar(position = "bottomright") %>% 
+  addSearchFeatures(targetGroups  = 'muni', 
+                    options = searchFeaturesOptions(zoom=14, openPopup=TRUE, hideMarkerOnCollapse=T)) %>% 
+  addLayersControl(
+    overlayGroups = c("Environmental Justice communities", "State House Districts","State Senate Districts"),
+    options = layersControlOptions(collapsed = TRUE)
+  ) %>% 
+  hideGroup(c("Environmental Justice communities", "State House Districts","State Senate Districts"))
+```
+
+<br>
+
+<br>
+
+### Traffic
+```{r mapPTRAF, fig.align="left", fig.cap="Map of Census block groups with the highest concentrations of one or more priority populations AND highest Traffic Proximity and Volume (PTRAF) values - Annual Avg Daily Traffic/Distance(km) to High Traffic Corridor."}
+# create color palette
+palPTRAF <- colorQuantile(
+  palette = "YlOrRd",
+  domain = ma_blkgrps_sf_PTRAF$PTRAF_19,
+  n = 5)
+
+# binpalPM25 <- colorBin(
+#   palette = "YlOrRd",
+#   domain = ma_blkgrps_sf_PM25$PM25_19,
+#   bins = 5, pretty = FALSE
+# )
+
+PopupEJ_PTRAF <- paste0(EJbgs$NAME, "<br/>",
+                      "<b>Town:</b> ", EJbgs$TOWN, "<br/>",
+                  "<b>State House District:</b> ", EJbgs$REP_DIST, "<br/>",
+                  "<b>State Senate District:</b> ", EJbgs$SEN_DIST, "<br/>",
+                      "<b>Environmental Justice categories: </b>", EJbgs$EJlabel, "<br/>",
+                  "<b>PTRAF (AADT/Distance(km)):</b> ", formatC(round(EJbgs$PTRAF_19,0), big.mark = ",", digits = 5, format = "d"), "<br/>",
+                      "<b>PTRAF percentile: </b>", round(EJbgs$PTRAFpctile*100,0))
+
+PopupHouse <- paste0("Massachusetts state House District ", "<b>",house_districts$REP_DIST,"</b>", " has ", "<b>",house_districts$BGs80thPTRAF,"</b>", " <b>Block Groups</b> with high percentages of priority populations experiencing <b>Traffic Proximity and Volume (PTRAF)</b> values at the 80th percentile or higher.", "<br/>",
+                     "<b>MINIMUM PTRAF (AADT/Distance(km)):</b> ", formatC(round(house_districts$PTRAF_19.min,0), big.mark = ","), "<br/>",
+                     "<b>MEAN PTRAF (AADT/Distance(km)):</b> ", formatC(round(house_districts$PTRAF_19.mean,0), big.mark = ","), "<br/>",
+                     "<b>MAXIMUM PTRAF (AADT/Distance(km)):</b> ", formatC(round(house_districts$PTRAF_19.max,0), big.mark = ",", digits = 5, format = "d"))
+
+PopupSenate <- paste0("Massachusetts state Senate District ", "<b>",senate_districts$SEN_DIST,"</b>", " has ", "<b>",senate_districts$BGs80thPTRAF,"</b>", " <b>Block Groups</b> with high percentages of priority populations experiencing <b>Traffic Proximity and Volume (PTRAF)</b> values at the 80th percentile or higher.", "<br/>",
+                     "<b>MINIMUM PTRAF (AADT/Distance(km)):</b> ", formatC(round(senate_districts$PTRAF_19.min,0), big.mark = ","), "<br/>",
+                     "<b>MEAN PTRAF (AADT/Distance(km)):</b> ", formatC(round(senate_districts$PTRAF_19.mean,0), big.mark = ","), "<br/>",
+                     "<b>MAXIMUM PTRAF (AADT/Distance(km)):</b> ", formatC(round(senate_districts$PTRAF_19.max,0), big.mark = ",", digits = 5, format = "d"))
+
+Popup <- paste0(ma_blkgrps_sf_PTRAF$NAME, "<br/>",
+                "<b>State House District:</b> ", ma_blkgrps_sf_PTRAF$REP_DIST, "<br/>",
+                  "<b>State Senate District:</b> ", ma_blkgrps_sf_PTRAF$SEN_DIST, "<br/>",
+                      "<b>Town:</b> ", ma_blkgrps_sf_PTRAF$TOWN, "<br/>",
+                      "<b>PTRAF (AADT/Distance(km)):</b> ", formatC(round(ma_blkgrps_sf_PTRAF$PTRAF_19,0), big.mark = ",", digits = 5, format = "d"), "<br/>",
+         "<b>PTRAF percentile:</b> ", round(ma_blkgrps_sf_PTRAF$PTRAFpctile*100,0), "<br/>",
+                      "<b>Priority Populations: </b>", ma_blkgrps_sf_PTRAF$POPSlabel)
+
+leaflet(width = "100%") %>% 
+  addProviderTiles(providers$Stamen.TonerLite) %>% 
+  addPolygons(data = ma_towns_simple,
+              weight = 0.7,
+              opacity = 1,
+              color = "gray",
+              fillOpacity = 0,
+              label=~NAME, popup=~NAMELSAD, group='muni') %>% 
+  addPolygons(data = house_districts,
+              weight = 2,
+              opacity = 1,
+              color = "blue",
+              dashArray = 3,
+              fillOpacity = 0,
+              # fillColor = "blue",
+              label = ~REP_DIST,
+              popup = PopupHouse,
+              highlight = highlightOptions(
+                weight = 5,
+                color = "#666",
+                dashArray = "",
+                fillOpacity = 0,
+                bringToFront = TRUE),
+              group = "State House Districts") %>% 
+  addPolygons(data = senate_districts,
+              # fillColor = "red",
+              weight = 2,
+              opacity = 1,
+              color = "green",
+              dashArray = 3,
+              fillOpacity = 0,
+              label=~SEN_DIST,
+              popup = PopupSenate,
+              highlight = highlightOptions(
+                weight = 5,
+                color = "#666",
+                dashArray = "",
+                fillOpacity = 0,
+                bringToFront = TRUE),
+              group = "State Senate Districts") %>% 
+  addPolygons(data = EJbgs,
+              # fillColor = "red",
+              weight = 2,
+              opacity = 1,
+              color = "purple",
+              dashArray = 3,
+              fillOpacity = 0,
+              label=~TOWN,
+              popup = PopupEJ_PTRAF,
+              highlight = highlightOptions(
+                weight = 5,
+                color = "#666",
+                dashArray = "",
+                fillOpacity = 0,
+                bringToFront = TRUE),
+              group = "Environmental Justice communities") %>% 
+  addPolygons(data = ma_blkgrps_sf_PTRAF, 
+              color = ~palPTRAF(PTRAF_19),
+              weight = 0.5,
+              opacity = 0.7,
+              # color = "white",
+              dashArray = 3,
+              fillOpacity = 0.7,
+              label=~TOWN, 
+              popup = Popup,
+              highlight = highlightOptions(
+                weight = 5,
+                color = "#666",
+                dashArray = "",
+                fillOpacity = 0.7,
+                bringToFront = TRUE)) %>% 
+  addLegend(title = "Highest Traffic<br>Exposure (PTRAF)<br>for Priority Populations", 
+            pal = palPTRAF,
+            values = ma_blkgrps_sf_PTRAF$PTRAF_19,
+            position = "bottomleft",
+            labFormat = function(type, cuts, p) {
+              n = length(cuts)
+              p = paste0(round(p * 100), '%')
+              cuts = paste0(formatC(cuts[-n], big.mark = ",", digits = 5, 
+                                    format = "d"), " - ", 
+                            formatC(cuts[-1], big.mark = ",", digits = 5, 
+                                    format = "d"))
+              }) %>% 
+  setView(lng = -71.7, 42.1, zoom = 8) %>% 
+  # addMiniMap() %>% 
+  addScaleBar(position = "bottomright") %>% 
+  addSearchFeatures(targetGroups  = 'muni', 
+                    options = searchFeaturesOptions(zoom=14, openPopup=TRUE, hideMarkerOnCollapse=T)) %>% 
+  addLayersControl(
+    overlayGroups = c("Environmental Justice communities", "State House Districts","State Senate Districts"),
+    options = layersControlOptions(collapsed = TRUE)
+  ) %>% 
+  hideGroup(c("Environmental Justice communities", "State House Districts","State Senate Districts"))
+```
+
+<br>
+
+<br>
+
+### About the maps
+
+This map shows communities (i.e. Census Block Groups) with high percentages of one or more priority population groups (80th percentile for the state) *AND* that experience the highest emissions burdens (80th percentile for the state) for specific pollutants. The three pollutants highlighted here - PM~2.5~, DPM, and PTRAF - are three of the seven emissions used to calculate [cumulative Emissions burdens](index.html).
+
+Priority populations represent demographic groups that environmental justice policy and research have identified as being especially vulnerable to environmental burdens as a consequence of social or economic disadvantage, physical vulnerability, or historic and persistent discrimination and inequality. These include:
+
+* People of color (i.e., persons who are of Hispanic ethnicity or racially not White)
+* Low income persons (i.e., income less than 200% of the poverty line)
+* Limited English speaking households (i.e., households where no adult speaks English "very well")
+* Adults 25 years or older without a high school diploma
+* Children under the age of 5
+* Adults over the age of 64
+* Environmental Justice communities defined by state policy
+
+
+Air emissions related to transportation:
+
+* PM~2.5~: Particulate matter in the air that is 2.5 microns or less in diameter (about 30 times smaller than the width of a human hair). These small particulates pose a threat to human health because they can penetrate deeply into the lungs and even enter the bloodstream. The EPA has documented that exposure to PM~2.5~ is associated with health effects such as elevated risk of premature mortality from cardiovascular diseases or lung cancer, and increased health problems such as asthma attacks.
+
+* Diesel Particulate Matter (DPM): Particulate matter generated from the combustion of diesel fuel; a surrogate measure of exposure for diesel exhaust more generally. Diesel exhaust is a complex mixture of thousands of gases and fine particles that contains more than 40 toxic air contaminants.  These include many known or suspected cancer-causing substances, such as benzene, arsenic and formaldehyde.
+
+* Traffic Proximity and Volume (PTRAF): An indicator of traffic exposure measured as residential proximity to roads weighted by traffic volume. More specifically, PTRAF is a count of vehicles (average annual daily traffic) at major roads within 500 meters of residential areas (i.e., Census Blocks) divided by distance in kilometers (km). Proximity to motor vehicle traffic is associated with greater exposure to toxic gases and particulate matter, as well as increased noise. Living near highly trafficked roads is related to increased risk of a variety of adverse health outcomes, including asthma, cardiovascular disease, hypertension, stroke, stress, and increased rates of mortality.
+
+
+<br>
+
+<br>
+
+## Population-weighted exposures for priority populations {.tabset}
+
+### PM2.5
+
+```{r graphPM25, fig.align="center", fig.cap="Population-weighted average exposures to PM2.5 for priority populations in Massachusetts relative to the state average."}
+# Load data
+load("../DATA/ne_layers.rds")
+
+# Create data subsets of Massachusetts
+ma_blkgrp_sf <- ne_blkgrp_sf %>% 
+  filter(STATE == "Massachusetts") %>% 
+  st_transform(., crs = 4326)
+
+PM25popAvg <- ma_blkgrp_sf %>% 
+  as.data.frame() %>% 
+  mutate(MA_LOWINC = if_else(MA_INCOME == "I", totalpopE, 0)) %>% 
+  mutate(MA_LOWINC = replace_na(MA_LOWINC,0)) %>% 
+  mutate(MA_MINORITY = if_else(MA_MINORITY == "M", totalpopE,0)) %>%
+  mutate(MA_MINORITY = replace_na(MA_MINORITY,0)) %>% 
+  mutate(MA_ENGLISH = if_else(MA_ENGLISH == "E", totalpopE,0)) %>%
+  mutate(MA_ENGLISH = replace_na(MA_ENGLISH,0)) %>% 
+  # filter(STATE == "Massachusetts") %>%
+  dplyr::select(totalpopE,
+                nhwhitepopE,
+                minorityE,
+                nhblackpopE,
+                nhamerindpopE,
+                nhasianpopE,
+                nhnativhpopE,
+                nhotherpopE,
+                nh2morepopE,
+                hisppopE,
+                povknownE,
+                num2povE, 
+                eng_hhE,
+                eng_limitE,
+                age25upE,
+                lthsE, 
+                allAgesE, 
+                under5E, 
+                over64E, 
+                MA_LOWINC,
+                MA_MINORITY,
+                MA_ENGLISH,
+                PM25_19) %>% 
+  gather(key = Group, value = Pop, totalpopE:MA_ENGLISH) %>% 
+  group_by(Group) %>% 
+  summarize(PM25wMean = weighted.mean(x = PM25_19, w = Pop, na.rm = TRUE),
+            PM25Mean = mean(PM25_19, na.rm = TRUE)) %>% 
+  spread(key = Group, value = PM25wMean) %>% 
+  transmute(Minority = (minorityE/PM25Mean - 1)*100,
+         #Minority_NHW = (minorityE/nhwhitepopE - 1)*100,
+         `Limited English HH` = (eng_limitE/PM25Mean - 1)*100,
+         `Low Income` = (num2povE/PM25Mean - 1)*100,
+         `No HS Dip` = (lthsE/PM25Mean - 1)*100,
+         `Under 5` = (under5E/PM25Mean - 1)*100,
+         `Over 64` = (over64E/PM25Mean - 1)*100,
+         `MA Low Income` = (MA_LOWINC/PM25Mean - 1)*100,
+         `MA Minority` = (MA_MINORITY/PM25Mean - 1)*100,
+         `MA Limited English HH` = (MA_ENGLISH/PM25Mean - 1)*100) %>%
+  gather(key = Group, value = Pct)
+
+# # clean up
+# rm(list = ls(pattern = "ne_"))
+# rm(ma_blkgrp_sf)
+
+PM25popAvg %>% 
+  arrange(desc(Pct)) %>% 
+  mutate(Pct = round(Pct,3), 
+         Status = if_else(Pct < 0, "Below state avg", "Above state avg"),
+         Group = recode(Group, "Minority" = "People of Color",
+                        "No HS Dip" = "No HS Diploma")) %>% 
+  hchart(., "bar", hcaes(x = Group, y = Pct, group = Status), 
+                         color = c("#F7A35C", "#7CB5EC"),
+         pointWidth = 15) %>% 
+  hc_yAxis(title = list(text = "Relative to state average"),
+           labels = list(format = "{value}%")) %>% 
+  hc_xAxis(title = NULL) %>% 
+  hc_tooltip(pointFormat = "{point.y}% {series.name}") %>% 
+  hc_title(text = "Population-Weighted PM<sub>2.5</sub> Exposure", 
+           useHTML = TRUE)
+```
+
+<br>
+
+<br>
+
+### DPM
+
+```{r graphDPM, fig.align="center", fig.cap="Population-weighted average exposures to Diesel Particulate Matter (DPM) for priority populations in Massachusetts relative to the state average."}
+# # Load data
+# load("../DATA/ne_layers.rds")
+# 
+# # Create data subsets of Massachusetts
+# ma_blkgrp_sf <- ne_blkgrp_sf %>% 
+#   filter(STATE == "Massachusetts") %>% 
+#   st_transform(., crs = 4326)
+
+# Pop Weighted avg of DPM for all Groups in Massachusetts relative to NE average
+DPMpopAvg <- ma_blkgrp_sf %>% 
+  as.data.frame() %>% 
+  mutate(MA_LOWINC = if_else(MA_INCOME == "I", totalpopE, 0)) %>% 
+  mutate(MA_LOWINC = replace_na(MA_LOWINC,0)) %>% 
+  mutate(MA_MINORITY = if_else(MA_MINORITY == "M", totalpopE,0)) %>%
+  mutate(MA_MINORITY = replace_na(MA_MINORITY,0)) %>% 
+  mutate(MA_ENGLISH = if_else(MA_ENGLISH == "E", totalpopE,0)) %>%
+  mutate(MA_ENGLISH = replace_na(MA_ENGLISH,0)) %>% 
+  # filter(STATE == "Massachusetts") %>%
+  dplyr::select(totalpopE,
+                nhwhitepopE,
+                minorityE,
+                nhblackpopE,
+                nhamerindpopE,
+                nhasianpopE,
+                nhnativhpopE,
+                nhotherpopE,
+                nh2morepopE,
+                hisppopE,
+                povknownE,
+                num2povE, 
+                eng_hhE,
+                eng_limitE,
+                age25upE,
+                lthsE, 
+                allAgesE, 
+                under5E, 
+                over64E, 
+                MA_LOWINC,
+                MA_MINORITY,
+                MA_ENGLISH,
+                DSLPM_19) %>% 
+  gather(key = Group, value = Pop, totalpopE:MA_ENGLISH) %>% 
+  group_by(Group) %>% 
+  summarize(DPMwMean = weighted.mean(x = DSLPM_19, w = Pop, na.rm = TRUE),
+            DPMMean = mean(DSLPM_19, na.rm = TRUE)) %>% 
+  spread(key = Group, value = DPMwMean) %>% 
+  transmute(Minority = (minorityE/DPMMean - 1)*100,
+         #Minority_NHW = (minorityE/nhwhitepopE - 1)*100,
+         `Limited English HH` = (eng_limitE/DPMMean - 1)*100,
+         `Low Income` = (num2povE/DPMMean - 1)*100,
+         `No HS Dip` = (lthsE/DPMMean - 1)*100,
+         `Under 5` = (under5E/DPMMean - 1)*100,
+         `Over 64` = (over64E/DPMMean - 1)*100,
+         `MA Low Income` = (MA_LOWINC/DPMMean - 1)*100,
+         `MA Minority` = (MA_MINORITY/DPMMean - 1)*100,
+         `MA Limited English HH` = (MA_ENGLISH/DPMMean - 1)*100) %>%
+  gather(key = Group, value = Pct)
+
+# # clean up
+# rm(list = ls(pattern = "ne_"))
+# rm(ma_blkgrp_sf)
+
+# store values for use in text
+LEH1 <- DPMpopAvg %>% filter(Group == "Limited English HH") %>% select(Pct) %>% pull()
+O64 <- DPMpopAvg %>% filter(Group == "Over 64") %>% select(Pct) %>% pull()
+
+DPMpopAvg %>% 
+  arrange(desc(Pct)) %>% 
+  mutate(Pct = round(Pct,1), 
+         Status = if_else(Pct < 0, "Below state avg", "Above state avg"),
+         Group = recode(Group, "Minority" = "People of Color",
+                        "No HS Dip" = "No HS Diploma")) %>% 
+  hchart(., "bar", hcaes(x = Group, y = Pct, group = Status), 
+                         color = c("#F7A35C", "#7CB5EC"),
+         pointWidth = 15) %>% 
+  hc_yAxis(title = list(text = "Relative to state average"),
+           labels = list(format = "{value}%")) %>% 
+  hc_xAxis(title = NULL) %>% 
+  hc_tooltip(pointFormat = "{point.y}% {series.name}") %>% 
+  hc_title(text = "Population-Weighted Diesel Particulate Matter Exposure")
+```
+
+<br>
+
+<br>
+
+### Traffic
+
+```{r graphPTRAF, fig.align="center", fig.cap="Population-weighted average exposures to Traffic Proximity and Volume (PTRAF) for priority populations in Massachusetts relative to the state average."}
+# # Load data
+# load("../DATA/ne_layers.rds")
+# 
+# # Create data subsets of Massachusetts
+# ma_blkgrp_sf <- ne_blkgrp_sf %>% 
+#   filter(STATE == "Massachusetts") %>% 
+#   st_transform(., crs = 4326)
+
+# Pop Weighted avg of PTRAF for all Groups in Massachusetts relative to state average
+PTRAFpopAvg <- ma_blkgrp_sf %>% 
+  as.data.frame() %>% 
+  mutate(MA_LOWINC = if_else(MA_INCOME == "I", totalpopE, 0)) %>% 
+  mutate(MA_LOWINC = replace_na(MA_LOWINC,0)) %>% 
+  mutate(MA_MINORITY = if_else(MA_MINORITY == "M", totalpopE,0)) %>%
+  mutate(MA_MINORITY = replace_na(MA_MINORITY,0)) %>% 
+  mutate(MA_ENGLISH = if_else(MA_ENGLISH == "E", totalpopE,0)) %>%
+  mutate(MA_ENGLISH = replace_na(MA_ENGLISH,0)) %>%
+  # filter(STATE == "Massachusetts") %>%
+  dplyr::select(totalpopE,
+                nhwhitepopE,
+                minorityE,
+                nhblackpopE,
+                nhamerindpopE,
+                nhasianpopE,
+                nhnativhpopE,
+                nhotherpopE,
+                nh2morepopE,
+                hisppopE,
+                povknownE,
+                num2povE, 
+                eng_hhE,
+                eng_limitE,
+                age25upE,
+                lthsE, 
+                allAgesE, 
+                under5E, 
+                over64E,
+                MA_LOWINC,
+                MA_MINORITY,
+                MA_ENGLISH,
+                PTRAF_19) %>% 
+  gather(key = Group, value = Pop, totalpopE:MA_ENGLISH) %>% 
+  group_by(Group) %>% 
+  summarize(DPMwMean = weighted.mean(x = PTRAF_19, w = Pop, na.rm = TRUE),
+            DPMMean = mean(PTRAF_19, na.rm = TRUE)) %>% 
+  spread(key = Group, value = DPMwMean) %>% 
+  transmute(`People of Color` = (minorityE/DPMMean - 1)*100,
+         #Minority_NHW = (minorityE/nhwhitepopE - 1)*100,
+         `Limited English HH` = (eng_limitE/DPMMean - 1)*100,
+         `Low Income` = (num2povE/DPMMean - 1)*100,
+         `No HS Diploma` = (lthsE/DPMMean - 1)*100,
+         `Under 5` = (under5E/DPMMean - 1)*100,
+         `Over 64` = (over64E/DPMMean - 1)*100,
+         `MA Low Income` = (MA_LOWINC/DPMMean - 1)*100,
+         `MA Minority` = (MA_MINORITY/DPMMean - 1)*100,
+         `MA Limited English HH` = (MA_ENGLISH/DPMMean - 1)*100) %>%
+  gather(key = Group, value = Pct)
+
+# clean up
+rm(list = ls(pattern = "ne_"))
+rm(ma_blkgrp_sf)
+
+PTRAFpopAvg %>% 
+  arrange(desc(Pct)) %>% 
+  mutate(Pct = round(Pct,1), 
+         Status = if_else(Pct < 0, "Below state avg", "Above state avg"),
+         Group = recode(Group, "Minority" = "People of Color",
+                        "No HS Dip" = "No HS Diploma")) %>% 
+  hchart(., "bar", hcaes(x = Group, y = Pct, group = Status), 
+                         color = c("#F7A35C", "#7CB5EC"),
+         pointWidth = 15) %>% 
+  hc_yAxis(title = list(text = "Relative to state average"),
+           labels = list(format = "{value}%")) %>% 
+  hc_xAxis(title = NULL) %>% 
+  hc_tooltip(pointFormat = "{point.y}% {series.name}") %>% 
+  hc_title(text = "Population-Weighted Traffic Proximity and Volume Exposure")
+```
+
+<br>
+
+<br>
+
+### About the graphs
+
+These graphs show population-weighted exposures by group for the following transportation-related emissions burdens: 
+
+* PM~2.5~: Particulate matter in the air that is 2.5 microns or less in diameter (about 30 times smaller than the width of a human hair). These small particulates pose a threat to human health because they can penetrate deeply into the lungs and even enter the bloodstream. The EPA has documented that exposure to PM~2.5~ is associated with health effects such as elevated risk of premature mortality from cardiovascular diseases or lung cancer, and increased health problems such as asthma attacks.
+
+* Diesel Particulate Matter (DPM): Particulate matter generated from the combustion of diesel fuel; a surrogate measure of exposure for diesel exhaust more generally. Diesel exhaust is a complex mixture of thousands of gases and fine particles that contains more than 40 toxic air contaminants.  These include many known or suspected cancer-causing substances, such as benzene, arsenic and formaldehyde.
+
+* Traffic Proximity and Volume (PTRAF): An indicator of traffic exposure measured as residential proximity to roads weighted by traffic volume. More specifically, PTRAF is a count of vehicles (average annual daily traffic) at major roads within 500 meters of residential areas (i.e., Census Blocks) divided by distance in kilometers (km). Proximity to motor vehicle traffic is associated with greater exposure to toxic gases and particulate matter, as well as increased noise. Living near highly trafficked roads is related to increased risk of a variety of adverse health outcomes, including asthma, cardiovascular disease, hypertension, stroke, stress, and increased rates of mortality.
+
+For example, limited English speaking households (i.e., 'Limited English HH') in the state reside in Census block groups that experience population-weighted average Diesel Particulate Matter (DPM) concentrations that are `r round(LEH1,1)`% above the state average. Compare this to individuals over age 64 who reside in Census block groups with concentrations `r round(O64,1)`% below the state average. 
+
+<br>
+
+<br>
+
+## Emissions Burdens by Jurisdiction {.tabset}
+
+### By municipality
+
+```{r townTable, fig.align="center"}
+# create object to hold complex headers for table
+sketch1 = htmltools::withTags(table(
+  class = 'display',
+  thead(
+    tr(
+      th(rowspan = 2, 'City/Town'),
+      th(align="center", colspan = 2, 'Avg PM2.5'),
+      th(align="center", colspan = 2, 'Avg Diesel Particulate Matter'),
+      th(align="center", colspan = 2, 'Avg Traffic Burden')
+    ),
+    tr(
+      lapply(rep(c('Value', 'Rank'), 3), th)
+    )
+  )
+))
+
+ma_towns %>% 
+  as.data.frame() %>% 
+  arrange(NAME) %>% 
+  filter(NAME != "County subdivisions not defined") %>%
+  select(NAME, PM25_19.mean, pctrank_PM25_19.mean, DSLPM_19.mean,
+         pctrank_DSLPM_19.mean, PTRAF_19.mean, pctrank_PTRAF_19.mean) %>% 
+  datatable(., rownames = FALSE, options = list(pageLength = 10), 
+            container = sketch1) %>% 
+  formatRound(., columns = c(3,5:7), digits = 1, mark = ",") %>% 
+  formatRound(., columns = c(2,4), digits = 3, mark = ",")
+```
+
+<!-- > Number of Census block groups with three or more cumualtive environmental burdens and high concentrations of populations of concern -->
+
+
+### By state house district
+
+```{r houseTable, fig.align="center"}
+# create object to hold complex headers for table
+sketch2 = htmltools::withTags(table(
+  class = 'display',
+  thead(
+    tr(
+      th(rowspan = 2, 'House District'),
+      th(align="center", colspan = 2, 'Avg PM2.5'),
+      th(align="center", colspan = 2, 'Avg Diesel Particulate Matter'),
+      th(align="center", colspan = 2, 'Avg Traffic Burden')
+    ),
+    tr(
+      lapply(rep(c('Value', 'Rank'), 3), th)
+    )
+  )
+))
+
+house_districts %>% 
+  as.data.frame() %>% 
+  select(REP_DIST, PM25_19.mean, pctrank_PM25_19.mean, DSLPM_19.mean,
+         pctrank_DSLPM_19.mean, PTRAF_19.mean, pctrank_PTRAF_19.mean) %>% 
+  datatable(., rownames = FALSE, options = list(pageLength = 10), 
+            container = sketch2) %>% 
+  formatRound(., columns = c(3,5:7), digits = 1, mark = ",") %>% 
+  formatRound(., columns = c(2,4), digits = 3, mark = ",")
+```
+
+
+### By state senate district
+
+```{r senateTable, fig.align="center"}
+# create object to hold complex headers for table
+sketch3 = htmltools::withTags(table(
+  class = 'display',
+  thead(
+    tr(
+      th(rowspan = 2, 'Senate District'),
+      th(align="center", colspan = 2, 'Avg PM2.5'),
+      th(align="center", colspan = 2, 'Avg Diesel Particulate Matter'),
+      th(align="center", colspan = 2, 'Avg Traffic Burden')
+    ),
+    tr(
+      lapply(rep(c('Value', 'Rank'), 3), th)
+    )
+  )
+))
+
+senate_districts %>% 
+  as.data.frame() %>% 
+  select(SEN_DIST, PM25_19.mean, pctrank_PM25_19.mean, DSLPM_19.mean,
+         pctrank_DSLPM_19.mean, PTRAF_19.mean, pctrank_PTRAF_19.mean) %>% 
+  datatable(., rownames = FALSE, options = list(pageLength = 10), 
+            container = sketch3) %>% 
+  formatRound(., columns = c(3,5:7), digits = 1, mark = ",") %>% 
+  formatRound(., columns = c(2,4), digits = 3, mark = ",")
+```
+
+
+### About the tables
+
+These tables show the average air pollution concentration values (micrograms per cubic meter of air) or average traffic burden scores (Proximity to High Traffic Corridors) for Census block groups in that jurisdiction, along with the rank. A rank indicates the percentage of jurisdictions that are below that value. For example, Boston has an average PM~2.5~ concentration value of 6.7 micrograms per cubic meter, and a PM~2.5~ rank of 93.4. The latter means that Boston's average PM~2.5~ concentration is higher than that of 93.4% of all other municipalities in the state. 
+
+* PM~2.5~: Particulate matter in the air that is 2.5 microns or less in diameter (about 30 times smaller than the width of a human hair). These small particulates pose a threat to human health because they can penetrate deeply into the lungs and even enter the bloodstream. The EPA has documented that exposure to PM~2.5~ is associated with health effects such as elevated risk of premature mortality from cardiovascular diseases or lung cancer, and increased health problems such as asthma attacks.
+
+* Diesel Particulate Matter (DPM): Particulate matter generated from the combustion of diesel fuel; a surrogate measure of exposure for diesel exhaust more generally. Diesel exhaust is a complex mixture of thousands of gases and fine particles that contains more than 40 toxic air contaminants.  These include many known or suspected cancer-causing substances, such as benzene, arsenic and formaldehyde.
+
+* Traffic Proximity and Volume (PTRAF): An indicator of traffic exposure measured as residential proximity to roads weighted by traffic volume. More specifically, PTRAF is a count of vehicles (average annual daily traffic) at major roads within 500 meters of residential areas (i.e., Census Blocks) divided by distance in kilometers (km). Proximity to motor vehicle traffic is associated with greater exposure to toxic gases and particulate matter, as well as increased noise. Living near highly trafficked roads is related to increased risk of a variety of adverse health outcomes, including asthma, cardiovascular disease, hypertension, stroke, stress, and increased rates of mortality.

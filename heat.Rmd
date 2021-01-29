@@ -1,0 +1,1097 @@
+---
+title: "Heat"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, message=FALSE, warning=FALSE)
+# library(flexdashboard)
+library(tidyverse)
+library(sf)
+library(tmap)
+library(maptools)
+# library(janitor)
+# library(kableExtra)
+library(tigris)
+options(tigris_use_cache = TRUE, tigris_class = "sf")
+library(leaflet)
+library(leaflet.extras)
+library(DT)
+# set common data table options
+# options(DT.options = list(scrollY="100vh", lengthMenu = c(5, 10, 15, 20)))
+options(DT.options = list(lengthMenu = c(10, 20, 50, 100)))
+library(highcharter)
+library(rmapshaper)
+```
+
+```{r data, include=FALSE, cache=TRUE}
+# # Read in LST data. Whole block group units.
+# load("../DATA/LST/ma_blkgrpLST_sf.rds")
+# # reduce unnecessary variables to speed up processing
+# rm(ma_rural_sf, ma_urban_sf)
+# ma_blkgrpLST_sf <- ma_blkgrpLST_sf %>% 
+#   select(!(OBJECTID_15:Shape_Area))
+
+ma_blkgrpLST_sf <- readRDS(file = "../DATA/ma_blkgrps_sf_CUM.Rds")
+
+#create layer of municipalities
+ma_towns <- county_subdivisions("MA") %>% 
+  filter(NAME != "County subdivisions not defined") %>%  
+  st_transform(., crs = 4326) %>% 
+  select(NAME,NAMELSAD)
+
+# Assign municipality names to block groups
+ma_blkgrpLST_sf <- county_subdivisions("MA") %>% 
+  st_transform(., crs = st_crs(ma_blkgrpLST_sf)) %>% 
+  transmute(TOWN = NAME) %>% 
+  st_join(ma_blkgrpLST_sf, ., largest = TRUE) %>% 
+  mutate(NAME = str_remove_all(NAME, ", Massachusetts")) %>% 
+  st_transform(., crs = 4326)
+
+# create layer of state house districts
+house_districts <- st_read("../DATA/shapefiles/house2012",
+                            "HOUSE2012_POLY") %>% 
+  select(REP_DIST) %>% 
+  st_transform(., crs = 4326) %>% 
+  st_make_valid()
+
+# create layer of state senate districts
+senate_districts <- st_read("../DATA/shapefiles/senate2012",
+                            "SENATE2012_POLY") %>% 
+  select(SEN_DIST) %>% 
+  st_transform(., crs = 4326) %>% 
+  st_make_valid()
+
+# Assign state house district names to block groups
+ma_blkgrpLST_sf <- house_districts %>% 
+  select(REP_DIST) %>% 
+  st_join(ma_blkgrpLST_sf, ., largest = TRUE)
+
+# Assign state senate district names to block groups
+ma_blkgrpLST_sf <- senate_districts %>% 
+  select(SEN_DIST) %>% 
+  st_join(ma_blkgrpLST_sf, ., largest = TRUE)
+
+
+# Create labeling variables to identify pops of a concern in a given block group that contributed to cumulative burden score
+ma_blkgrpLST_sf <- ma_blkgrpLST_sf %>% 
+  mutate(Minority80th = if_else(percent_rank(minority_pctE) >= 0.8, "People of Color","NA"),
+    Under5_80th = if_else(percent_rank(pct_under5E) >= 0.8, "Under 5", "NA"),
+    Under18_80th = if_else(percent_rank(pct_under18E) >= 0.8, "Under 18", "NA"),
+    Over64_80th = if_else(percent_rank(pct_over64E) >= 0.8, "Over 64", "NA"),
+    lths80th = if_else(percent_rank(pct_lthsE) >= 0.8, "No HS Diploma", "NA"),
+    pct2pov80th = if_else(percent_rank(pct2povE) >= 0.8, "Low Income", "NA"),
+    eng_limit_pct80th = if_else(percent_rank(eng_limit_pctE) >= 0.8, "Limited English HH", "NA"),
+    MA_INCOME_80th = if_else(MA_INCOME == "I", "MA Low Income", "NA"),
+    MA_MINORITY_80th = if_else(MA_MINORITY == "M", "MA Minority", "NA"),
+    MA_ENGLISH_80th = if_else(MA_ENGLISH == "E", "MA Limited English HH", "NA"),
+    POPSlabel = gsub("^,*|(?<=,),|,*$", "", # get rid of extra commas
+    str_remove_all( # get rid of NAs
+      paste(Minority80th,
+            Under5_80th,
+            Under18_80th,
+            Over64_80th,
+            lths80th,
+            pct2pov80th,
+            eng_limit_pct80th,
+            MA_INCOME_80th,
+            MA_MINORITY_80th,
+            MA_ENGLISH_80th, sep = ","),
+      pattern = "NA"), 
+    perl=T
+    ),
+    POPSlabel = if_else(POPSlabel == "", "No Pops of Concern", POPSlabel),
+    meanAvgLSTpctile = percent_rank(meanAvgLST),
+    UHI24avgpctile = percent_rank(UHI24avg),
+    meanNightLSTpctile = percent_rank(meanNightLST)
+    )
+  # filter(POPSlabel != "No Pops of Concern")
+
+# create layer of EJ polygons
+EJbgs <- ma_blkgrpLST_sf %>% 
+  filter(MA_INCOME == "I" | MA_MINORITY == "M" | MA_ENGLISH == "E") %>% 
+  mutate(EJlabel = gsub("^,*|(?<=,),|,*$", "", # get rid of extra commas
+    str_remove_all( # get rid of NAs
+      paste(MA_INCOME_80th,
+            MA_MINORITY_80th,
+            MA_ENGLISH_80th, sep = ","),
+      pattern = "NA"), 
+    perl=T
+    )) %>% 
+  select(NAME, TOWN, REP_DIST, SEN_DIST, EJlabel, meanAvgLST, UHI24avg, meanNightLST, meanAvgLSTpctile, UHI24avgpctile, meanNightLSTpctile) %>% 
+  ms_simplify(., keep = 0.1, keep_shapes = TRUE)
+
+# create summary stats of LST values by municipality
+muniLST <- ma_blkgrpLST_sf %>%
+  as.data.frame() %>% 
+  select(TOWN, meanAvgLST, UHI24avg, meanNightLST) %>% 
+  group_by(TOWN) %>% 
+  summarize(across(.cols = everything(), 
+                   list(min = min, mean = mean, max = max),
+                   na.rm = TRUE,
+                   .names = "{.col}.{.fn}")) %>% 
+  mutate(across(ends_with("mean"), 
+                ~percent_rank(.x)*100,
+                .names = "pctrank_{.col}"))
+
+# create summary of LST values by house district
+houseLST <- ma_blkgrpLST_sf %>%
+  as.data.frame() %>% 
+  select(REP_DIST, meanAvgLST, UHI24avg, meanNightLST) %>% 
+  group_by(REP_DIST) %>% 
+  summarize(across(.cols = everything(), 
+                   list(min = min, mean = mean, max = max),
+                   na.rm = TRUE,
+                   .names = "{.col}.{.fn}")) %>% 
+  mutate(across(ends_with("mean"), 
+                ~percent_rank(.x)*100,
+                .names = "pctrank_{.col}")) %>% 
+  drop_na()
+
+# create summary of LST values by senate district
+senateLST <- ma_blkgrpLST_sf %>%
+  as.data.frame() %>% 
+  select(SEN_DIST, meanAvgLST, UHI24avg, meanNightLST) %>% 
+  group_by(SEN_DIST) %>% 
+  summarize(across(.cols = everything(), 
+                   list(min = min, mean = mean, max = max),
+                   na.rm = TRUE,
+                   .names = "{.col}.{.fn}")) %>% 
+  mutate(across(ends_with("mean"), 
+                ~percent_rank(.x)*100,
+                .names = "pctrank_{.col}")) %>% 
+  drop_na()
+
+# Create counts of block groups at 80th percentile Day-Night LST by jurisdiction
+muniDayNight_80th <- ma_blkgrpLST_sf %>% 
+  as.data.frame() %>% 
+  filter(percent_rank(meanAvgLST) >= 0.8 & POPSlabel != "No Pops of Concern") %>%
+  group_by(TOWN) %>% 
+  summarize(BGs80thDayNight = n())
+
+houseDayNight_80th <- ma_blkgrpLST_sf %>% 
+  as.data.frame() %>% 
+  filter(percent_rank(meanAvgLST) >= 0.8 & POPSlabel != "No Pops of Concern") %>%
+  group_by(REP_DIST) %>% 
+  summarize(BGs80thDayNight = n())
+
+senateDayNight_80th <- ma_blkgrpLST_sf %>% 
+  as.data.frame() %>% 
+  filter(percent_rank(meanAvgLST) >= 0.8 & POPSlabel != "No Pops of Concern") %>%
+  group_by(SEN_DIST) %>% 
+  summarize(BGs80thDayNight = n())
+
+# Create counts of block groups at 80th percentile UHI24h by jurisdiction
+muniUHI24h_80th <- ma_blkgrpLST_sf %>% 
+  as.data.frame() %>% 
+  filter(percent_rank(UHI24avg) >= 0.8 & POPSlabel != "No Pops of Concern") %>% 
+  group_by(TOWN) %>% 
+  summarize(BGs80thUHI24h = n())
+
+houseUHI24h_80th <- ma_blkgrpLST_sf %>% 
+  as.data.frame() %>% 
+  filter(percent_rank(UHI24avg) >= 0.8 & POPSlabel != "No Pops of Concern") %>% 
+  group_by(REP_DIST) %>% 
+  summarize(BGs80thUHI24h = n())
+
+senateUHI24h_80th <- ma_blkgrpLST_sf %>% 
+  as.data.frame() %>% 
+  filter(percent_rank(UHI24avg) >= 0.8 & POPSlabel != "No Pops of Concern") %>% 
+  group_by(SEN_DIST) %>% 
+  summarize(BGs80thUHI24h = n())
+
+# Create counts of block groups at 80th percentile Night by jurisdiction
+muniNight_80th <- ma_blkgrpLST_sf %>% 
+  as.data.frame() %>% 
+  filter(percent_rank(meanNightLST) >= 0.8 & POPSlabel != "No Pops of Concern") %>% 
+  group_by(TOWN) %>% 
+  summarize(BGs80thNight = n())
+
+houseNight_80th <- ma_blkgrpLST_sf %>% 
+  as.data.frame() %>% 
+  filter(percent_rank(meanNightLST) >= 0.8 & POPSlabel != "No Pops of Concern") %>% 
+  group_by(REP_DIST) %>% 
+  summarize(BGs80thNight = n())
+
+senateNight_80th <- ma_blkgrpLST_sf %>% 
+  as.data.frame() %>% 
+  filter(percent_rank(meanNightLST) >= 0.8 & POPSlabel != "No Pops of Concern") %>% 
+  group_by(SEN_DIST) %>% 
+  summarize(BGs80thNight = n())
+
+# join stats to jurisdiction layers
+ma_towns <- ma_towns %>% 
+  left_join(., muniLST, by = c("NAME" = "TOWN")) %>% 
+  left_join(., muniDayNight_80th, by = c("NAME" = "TOWN")) %>% 
+  left_join(., muniUHI24h_80th, by = c("NAME" = "TOWN")) %>% 
+  left_join(., muniNight_80th, by = c("NAME" = "TOWN")) %>% 
+  replace_na(list(BGs80thDayNight = 0, BGs80thUHI24h = 0, BGs80thNight = 0)) %>% 
+  ms_simplify(., keep = 0.1, keep_shapes = TRUE)
+
+house_districts <- house_districts %>% 
+  left_join(., houseLST, by = "REP_DIST") %>% 
+  left_join(., houseDayNight_80th, by = "REP_DIST") %>% 
+  left_join(., houseUHI24h_80th, by = "REP_DIST") %>% 
+  left_join(., houseNight_80th, by = "REP_DIST") %>% 
+  replace_na(list(BGs80thDayNight = 0, BGs80thUHI24h = 0, BGs80thNight = 0)) %>% 
+  ms_simplify(., keep = 0.1, keep_shapes = TRUE)
+
+senate_districts <- senate_districts %>% 
+  left_join(., senateLST, by = "SEN_DIST") %>% 
+  left_join(., senateDayNight_80th, by = "SEN_DIST") %>% 
+  left_join(., senateUHI24h_80th, by = "SEN_DIST") %>% 
+  left_join(., senateNight_80th, by = "SEN_DIST") %>% 
+  replace_na(list(BGs80thDayNight = 0, BGs80thUHI24h = 0, BGs80thNight = 0)) %>% 
+  ms_simplify(., keep = 0.1, keep_shapes = TRUE)
+
+# create layer of ma_blkgrpLST_sf for 80th percentile
+ma_blkgrps_sf_DayNight <- ma_blkgrpLST_sf %>% 
+  filter(percent_rank(meanAvgLST) >= 0.8 & 
+           POPSlabel != "No Pops of Concern") %>% 
+  select(NAME, REP_DIST, SEN_DIST, TOWN, POPSlabel, 
+         meanAvgLST, meanAvgLSTpctile) %>% 
+  ms_simplify(., keep = 0.1, keep_shapes = TRUE)
+
+ma_blkgrps_sf_UHI24h <- ma_blkgrpLST_sf %>% 
+  filter(percent_rank(UHI24avg) >= 0.8 & 
+           POPSlabel != "No Pops of Concern") %>% 
+  select(NAME, REP_DIST, SEN_DIST, TOWN, POPSlabel, 
+         UHI24avg, UHI24avgpctile) %>% 
+  ms_simplify(., keep = 0.1, keep_shapes = TRUE)
+
+ma_blkgrps_sf_Night <- ma_blkgrpLST_sf %>% 
+  filter(percent_rank(meanNightLST) >= 0.8 & 
+           POPSlabel != "No Pops of Concern") %>% 
+  select(NAME, REP_DIST, SEN_DIST, TOWN, POPSlabel, 
+         meanNightLST, meanNightLSTpctile) %>% 
+  ms_simplify(., keep = 0.1, keep_shapes = TRUE)
+
+# create tables of affected populations for graphs
+LST24hrPop <- ma_blkgrpLST_sf %>% 
+  as.data.frame() %>% 
+  mutate(MA_LOWINC = if_else(MA_INCOME == "I", totalpopE, 0)) %>% 
+  mutate(MA_LOWINC = replace_na(MA_LOWINC,0)) %>% 
+  mutate(MA_MINORITY = if_else(MA_MINORITY == "M", totalpopE,0)) %>%
+  mutate(MA_MINORITY = replace_na(MA_MINORITY,0)) %>% 
+  mutate(MA_ENGLISH = if_else(MA_ENGLISH == "E", totalpopE,0)) %>%
+  mutate(MA_ENGLISH = replace_na(MA_ENGLISH,0)) %>% 
+  dplyr::select(totalpopE,
+                minorityE,
+                num2povE, 
+                eng_hhE,
+                eng_limitE,
+                age25upE,
+                lthsE,  
+                under5E, 
+                over64E,
+                MA_LOWINC,
+                MA_MINORITY,
+                MA_ENGLISH,
+                meanAvgLST) %>% 
+  gather(key = Group, value = Pop, totalpopE:MA_ENGLISH) %>% 
+  group_by(Group) %>% 
+  summarize(LST24hrwMean = weighted.mean(x = meanAvgLST, w = Pop, na.rm = TRUE),
+            LST24hrMean = mean(meanAvgLST, na.rm = TRUE)) %>% 
+  filter(Group %in% c("totalpopE","minorityE","eng_limitE","num2povE","lthsE","under5E","over64E","MA_LOWINC","MA_MINORITY","MA_ENGLISH")) %>% 
+  mutate(Group = case_when(
+    Group == "totalpopE" ~ "Total Pop",
+    Group == "minorityE" ~ "People of Color",
+    Group == "eng_limitE" ~ "Limited English HH",
+    Group == "num2povE" ~ "Low Income",
+    Group == "lthsE" ~ "No HS Diploma",
+    Group == "under5E" ~ "Under 5",
+    Group == "over64E" ~ "Over 64",
+    Group == "MA_LOWINC" ~ "MA Low Income",
+    Group == "MA_MINORITY" ~ "MA Minority",
+    Group == "MA_ENGLISH" ~ "MA Limited English HH"),
+    LST24hrwMean = round(LST24hrwMean,1))
+
+UHI24hrPop <- ma_blkgrpLST_sf %>% 
+  as.data.frame() %>% 
+  mutate(MA_LOWINC = if_else(MA_INCOME == "I", totalpopE, 0)) %>% 
+  mutate(MA_LOWINC = replace_na(MA_LOWINC,0)) %>% 
+  mutate(MA_MINORITY = if_else(MA_MINORITY == "M", totalpopE,0)) %>%
+  mutate(MA_MINORITY = replace_na(MA_MINORITY,0)) %>% 
+  mutate(MA_ENGLISH = if_else(MA_ENGLISH == "E", totalpopE,0)) %>%
+  mutate(MA_ENGLISH = replace_na(MA_ENGLISH,0)) %>% 
+  dplyr::select(totalpopE,
+                minorityE,
+                num2povE, 
+                eng_hhE,
+                eng_limitE,
+                age25upE,
+                lthsE,  
+                under5E, 
+                over64E,
+                MA_LOWINC,
+                MA_MINORITY,
+                MA_ENGLISH,
+                UHI24avg) %>% 
+  gather(key = Group, value = Pop, totalpopE:MA_ENGLISH) %>% 
+  group_by(Group) %>% 
+  summarize(UHI24hrwMean = weighted.mean(x = UHI24avg, w = Pop, na.rm = TRUE),
+            UHI24hrMean = mean(UHI24avg, na.rm = TRUE)) %>% 
+  filter(Group %in% c("totalpopE","minorityE","eng_limitE","num2povE","lthsE","under5E","over64E","MA_LOWINC","MA_MINORITY","MA_ENGLISH")) %>% 
+  mutate(Group = case_when(
+    Group == "totalpopE" ~ "Total Pop",
+    Group == "minorityE" ~ "People of Color",
+    Group == "eng_limitE" ~ "Limited English HH",
+    Group == "num2povE" ~ "Low Income",
+    Group == "lthsE" ~ "No HS Diploma",
+    Group == "under5E" ~ "Under 5",
+    Group == "over64E" ~ "Over 64",
+    Group == "MA_LOWINC" ~ "MA Low Income",
+    Group == "MA_MINORITY" ~ "MA Minority",
+    Group == "MA_ENGLISH" ~ "MA Limited English HH"),
+    UHI24hrwMean = round(UHI24hrwMean,1))
+
+LSTNightPop <- ma_blkgrpLST_sf %>% 
+  as.data.frame() %>% 
+  mutate(MA_LOWINC = if_else(MA_INCOME == "I", totalpopE, 0)) %>% 
+  mutate(MA_LOWINC = replace_na(MA_LOWINC,0)) %>% 
+  mutate(MA_MINORITY = if_else(MA_MINORITY == "M", totalpopE,0)) %>%
+  mutate(MA_MINORITY = replace_na(MA_MINORITY,0)) %>% 
+  mutate(MA_ENGLISH = if_else(MA_ENGLISH == "E", totalpopE,0)) %>%
+  mutate(MA_ENGLISH = replace_na(MA_ENGLISH,0)) %>% 
+  dplyr::select(totalpopE,
+                minorityE,
+                num2povE, 
+                eng_hhE,
+                eng_limitE,
+                age25upE,
+                lthsE,  
+                under5E, 
+                over64E,
+                MA_LOWINC,
+                MA_MINORITY,
+                MA_ENGLISH,
+                meanNightLST) %>% 
+  gather(key = Group, value = Pop, totalpopE:MA_ENGLISH) %>% 
+  group_by(Group) %>% 
+  summarize(LSTNightwMean = weighted.mean(x = meanNightLST, w = Pop, na.rm = TRUE),
+            LSTNightMean = mean(meanNightLST, na.rm = TRUE)) %>% 
+  filter(Group %in% c("totalpopE","minorityE","eng_limitE","num2povE","lthsE","under5E","over64E","MA_LOWINC","MA_MINORITY","MA_ENGLISH")) %>% 
+  mutate(Group = case_when(
+    Group == "totalpopE" ~ "Total Pop",
+    Group == "minorityE" ~ "People of Color",
+    Group == "eng_limitE" ~ "Limited English HH",
+    Group == "num2povE" ~ "Low Income",
+    Group == "lthsE" ~ "No HS Diploma",
+    Group == "under5E" ~ "Under 5",
+    Group == "over64E" ~ "Over 64",
+    Group == "MA_LOWINC" ~ "MA Low Income",
+    Group == "MA_MINORITY" ~ "MA Minority",
+    Group == "MA_ENGLISH" ~ "MA Limited English HH"),
+    LSTNightwMean = round(LSTNightwMean,1))
+
+# clean up
+rm(list = ls(pattern = paste("muni", "_80th", "houseN", "senateN", "houseL", "senateL", "houseU", "senateU", "houseD", "senateD", "ma_blkgrpLST_sf$", sep = "|")))
+```
+
+Heat is the leading cause of weather-related death in the U.S. Warmer air temperatures can also exacerbate air pollution, especially ground-level ozone. As the climate warms, heat presents both a direct and indirect threat to health and quality of life. 
+
+Almost 1.23 million people in Massachusetts live in areas with the highest day and nighttime temperatures, primarily in the eastern half of the state and the Springfield-Holyoke area. Limited English speaking households and people of color are disproportionately exposed to the highest daytime and nighttime temperatures.
+
+These interactive figures identify communities across Massachusetts that are most overburdened and most vulnerable to three measures of ambient temperature: Day-Night average land surface temperatures (LST), the Urban Heat Island effect, and elevated nighttime LST.
+
+<br>
+
+## Heat & Priority Populations by Census block group {.tabset}
+
+### Day-Night Avg
+```{r mapDayNight, fig.align="left", fig.cap="Map of Census block groups with the highest concentrations of one or more priority populations AND highest day-night average land surface temperatures (LST)."}
+# create simplified towns layer for faster mapping
+# download state outline
+ma_state <- states(cb = TRUE) %>% 
+  filter(NAME == "Massachusetts")
+# filter out extra polygons, clip out boundaries from water, simplify
+ma_towns_simple <- ma_towns %>% 
+  filter(NAME != "County subdivisions not defined") %>% 
+  ms_clip(., ma_state) %>% 
+  ms_simplify(., keep = 0.1, keep_shapes = TRUE)
+
+# create color palette
+pal <- colorQuantile(
+  palette = "YlOrRd",
+  domain = ma_blkgrps_sf_DayNight$meanAvgLST,
+  n = 5)
+
+# binpal <- colorBin(
+#   palette = "YlOrRd",
+#   domain = ma_blkgrps_sf_DayNight$meanAvgLST,
+#   bins = 5, pretty = FALSE
+# )
+
+PopupEJ <- paste0(EJbgs$NAME, "<br/>",
+                      "<b>Town:</b> ", EJbgs$TOWN, "<br/>",
+                  "<b>State House District:</b> ", EJbgs$REP_DIST, "<br/>",
+                  "<b>State Senate District:</b> ", EJbgs$SEN_DIST, "<br/>",
+                      "<b>Environmental Justice categories: </b>", EJbgs$EJlabel, "<br/>",
+                  "<b>Day-Night Avg Temp (°F):</b> ", round(EJbgs$meanAvgLST,1),"°", "<br/>",
+                      "<b>Day-Night Avg Temp percentile: </b>", round(EJbgs$meanAvgLSTpctile*100,0))
+
+PopupHouse <- paste0("Massachusetts state House District ", "<b>",house_districts$REP_DIST,"</b>", " has ", "<b>",house_districts$BGs80thDayNight,"</b>", " <b>Block Groups</b> with high percentages of priority populations experiencing Day-Night average land surface temperatures at the 80th percentile - ", round(min(ma_blkgrps_sf_DayNight$meanAvgLST),1),"° - or higher.", "<br/>",
+                     "<b>MIN Day-Night Avg Temp (°F):</b> ", round(house_districts$meanAvgLST.min,1),"°", "<br/>",
+                     "<b>MEAN Day-Night Avg Temp (°F):</b> ", round(house_districts$meanAvgLST.mean,1),"°", "<br/>",
+                     "<b>MAX Day-Night Avg Temp (°F):</b> ", round(house_districts$meanAvgLST.max,1),"°")
+
+PopupSenate <- paste0("Massachusetts state Senate District ", "<b>",senate_districts$SEN_DIST,"</b>", " has ", "<b>",senate_districts$BGs80thDayNight,"</b>", " <b>Block Groups</b> with high percentages of priority populations experiencing Day-Night average land surface temperatures at the 80th percentile - ", round(min(ma_blkgrps_sf_DayNight$meanAvgLST),1),"° - or higher.", "<br/>",
+                     "<b>MIN Day-Night Avg Temp (°F):</b> ", round(senate_districts$meanAvgLST.min,1),"°", "<br/>",
+                     "<b>MEAN Day-Night Avg Temp (°F):</b> ", round(senate_districts$meanAvgLST.mean,1),"°", "<br/>",
+                     "<b>MAX Day-Night Avg Temp (°F):</b> ", round(senate_districts$meanAvgLST.max,1),"°")
+
+Popup <- paste0(ma_blkgrps_sf_DayNight$NAME, "<br/>",
+                "<b>State House District:</b> ", ma_blkgrps_sf_DayNight$REP_DIST, "<br/>",
+                  "<b>State Senate District:</b> ", ma_blkgrps_sf_DayNight$SEN_DIST, "<br/>",
+                      "<b>Town:</b> ", ma_blkgrps_sf_DayNight$TOWN, "<br/>",
+                      "<b>Day-Night Avg Temp (°F):</b> ", round(ma_blkgrps_sf_DayNight$meanAvgLST,1),"°", "<br/>",
+         "<b>Day-Night Avg Temp percentile:</b> ", round(ma_blkgrps_sf_DayNight$meanAvgLSTpctile*100,0), "<br/>",
+                      "<b>Priority Populations: </b>", ma_blkgrps_sf_DayNight$POPSlabel)
+
+leaflet(width = "100%") %>% 
+  addProviderTiles(providers$Stamen.TonerLite) %>% 
+  addPolygons(data = ma_towns_simple,
+              weight = 0.7,
+              opacity = 1,
+              color = "gray",
+              fillOpacity = 0,
+              label=~NAME, popup=~NAMELSAD, group='muni') %>% 
+  addPolygons(data = house_districts,
+              weight = 2,
+              opacity = 1,
+              color = "blue",
+              dashArray = 3,
+              fillOpacity = 0,
+              # fillColor = "blue",
+              label = ~REP_DIST,
+              popup = PopupHouse,
+              highlight = highlightOptions(
+                weight = 5,
+                color = "#666",
+                dashArray = "",
+                fillOpacity = 0,
+                bringToFront = TRUE),
+              group = "State House Districts") %>% 
+  addPolygons(data = senate_districts,
+              # fillColor = "red",
+              weight = 2,
+              opacity = 1,
+              color = "green",
+              dashArray = 3,
+              fillOpacity = 0,
+              label=~SEN_DIST,
+              popup = PopupSenate,
+              highlight = highlightOptions(
+                weight = 5,
+                color = "#666",
+                dashArray = "",
+                fillOpacity = 0,
+                bringToFront = TRUE),
+              group = "State Senate Districts") %>% 
+  addPolygons(data = EJbgs,
+              # fillColor = "red",
+              weight = 2,
+              opacity = 1,
+              color = "purple",
+              dashArray = 3,
+              fillOpacity = 0,
+              label=~TOWN,
+              popup = PopupEJ,
+              highlight = highlightOptions(
+                weight = 5,
+                color = "#666",
+                dashArray = "",
+                fillOpacity = 0,
+                bringToFront = TRUE),
+              group = "Environmental Justice communities") %>% 
+  addPolygons(data = ma_blkgrps_sf_DayNight, 
+              color = ~pal(meanAvgLST),
+              weight = 0.5,
+              opacity = 0.7,
+              # color = "white",
+              dashArray = 3,
+              fillOpacity = 0.7,
+              label=~TOWN, 
+              popup = Popup,
+              highlight = highlightOptions(
+                weight = 5,
+                color = "#666",
+                dashArray = "",
+                fillOpacity = 0.7,
+                bringToFront = TRUE)) %>% 
+  addLegend(title = "Highest Day-Night<br>Avg LST (°F) and<br>High Priority Pops", 
+            pal = pal,
+            values = ma_blkgrps_sf_DayNight$meanAvgLST,
+            position = "bottomleft",
+            labFormat = function(type, cuts, p) {
+              n = length(cuts)
+              p = paste0(round(p * 100), '%')
+              cuts = paste0(formatC(cuts[-n], big.mark = ",", digits = 1, 
+                                    format = "f"), " - ", 
+                            formatC(cuts[-1], big.mark = ",", digits = 1, 
+                                    format = "f"))
+              }) %>% 
+  setView(lng = -71.7, 42.1, zoom = 8) %>% 
+  # addMiniMap() %>% 
+  addScaleBar(position = "bottomright") %>% 
+  addSearchFeatures(targetGroups  = 'muni', 
+                    options = searchFeaturesOptions(zoom=14, openPopup=TRUE, hideMarkerOnCollapse=T)) %>% 
+  addLayersControl(
+    overlayGroups = c("Environmental Justice communities", "State House Districts","State Senate Districts"),
+    options = layersControlOptions(collapsed = TRUE)
+  ) %>% 
+  hideGroup(c("Environmental Justice communities", "State House Districts","State Senate Districts"))
+```
+
+<br>
+
+<br>
+
+### Urban Heat Island
+```{r mapDayNightUHI, fig.align="left", fig.cap="Map of Census block groups with the highest concentrations of one or more priority populations AND highest day-night average urban heat island (UHI) effects."}
+# create color palette
+pal <- colorQuantile(
+  palette = "YlOrRd",
+  domain = ma_blkgrps_sf_UHI24h$UHI24avg,
+  n = 5)
+
+# binpal <- colorBin(
+#   palette = "YlOrRd",
+#   domain = ma_blkgrps_sf_UHI24h$UHI24avg,
+#   bins = 5, pretty = FALSE
+# )
+
+PopupEJ <- paste0(EJbgs$NAME, "<br/>",
+                      "<b>Town:</b> ", EJbgs$TOWN, "<br/>",
+                  "<b>State House District:</b> ", EJbgs$REP_DIST, "<br/>",
+                  "<b>State Senate District:</b> ", EJbgs$SEN_DIST, "<br/>",
+                      "<b>Environmental Justice categories: </b>", EJbgs$EJlabel, "<br/>",
+                  "<b>Day-Night Avg UHI (°F):</b> ", round(EJbgs$UHI24avg,1),"°", "<br/>",
+                      "<b>Day-Night Avg UHI percentile: </b>", round(EJbgs$UHI24avgpctile*100,0))
+
+PopupHouse <- paste0("Massachusetts state House District ", "<b>",house_districts$REP_DIST,"</b>", " has ", "<b>",house_districts$BGs80thDayNight,"</b>", " <b>Block Groups</b> with high percentages of priority populations experiencing Day-Night average urban heat island effects at the 80th percentile - ", round(min(ma_blkgrps_sf_UHI24h$UHI24avg),1),"° - or higher.", "<br/>",
+                     "<b>MIN Day-Night Avg UHI (°F):</b> ", round(house_districts$UHI24avg.min,1),"°", "<br/>",
+                     "<b>MEAN Day-Night Avg UHI (°F):</b> ", round(house_districts$UHI24avg.mean,1),"°", "<br/>",
+                     "<b>MAX Day-Night Avg UHI (°F):</b> ", round(house_districts$UHI24avg.max,1),"°")
+
+PopupSenate <- paste0("Massachusetts state Senate District ", "<b>",senate_districts$SEN_DIST,"</b>", " has ", "<b>",senate_districts$BGs80thDayNight,"</b>", " <b>Block Groups</b> with high percentages of priority populations experiencing Day-Night average urban heat island effects at the 80th percentile - ", round(min(ma_blkgrps_sf_UHI24h$UHI24avg),1),"° - or higher.", "<br/>",
+                     "<b>MIN Day-Night Avg UHI (°F):</b> ", round(senate_districts$UHI24avg.min,1),"°", "<br/>",
+                     "<b>MEAN Day-Night Avg UHI (°F):</b> ", round(senate_districts$UHI24avg.mean,1),"°", "<br/>",
+                     "<b>MAX Day-Night Avg UHI (°F):</b> ", round(senate_districts$UHI24avg.max,1),"°")
+
+Popup <- paste0(ma_blkgrps_sf_UHI24h$NAME, "<br/>",
+                "<b>State House District:</b> ", ma_blkgrps_sf_UHI24h$REP_DIST, "<br/>",
+                  "<b>State Senate District:</b> ", ma_blkgrps_sf_UHI24h$SEN_DIST, "<br/>",
+                      "<b>Town:</b> ", ma_blkgrps_sf_UHI24h$TOWN, "<br/>",
+                      "<b>Day-Night Avg UHI (°F):</b> ", round(ma_blkgrps_sf_UHI24h$UHI24avg,1),"°", "<br/>",
+         "<b>Day-Night Avg UHI percentile:</b> ", round(ma_blkgrps_sf_UHI24h$UHI24avgpctile*100,0), "<br/>",
+                      "<b>Priority Populations: </b>", ma_blkgrps_sf_UHI24h$POPSlabel)
+
+leaflet(width = "100%") %>% 
+  addProviderTiles(providers$Stamen.TonerLite) %>% 
+  addPolygons(data = ma_towns_simple,
+              weight = 0.7,
+              opacity = 1,
+              color = "gray",
+              fillOpacity = 0,
+              label=~NAME, popup=~NAMELSAD, group='muni') %>% 
+  addPolygons(data = house_districts,
+              weight = 2,
+              opacity = 1,
+              color = "blue",
+              dashArray = 3,
+              fillOpacity = 0,
+              # fillColor = "blue",
+              label = ~REP_DIST,
+              popup = PopupHouse,
+              highlight = highlightOptions(
+                weight = 5,
+                color = "#666",
+                dashArray = "",
+                fillOpacity = 0,
+                bringToFront = TRUE),
+              group = "State House Districts") %>% 
+  addPolygons(data = senate_districts,
+              # fillColor = "red",
+              weight = 2,
+              opacity = 1,
+              color = "green",
+              dashArray = 3,
+              fillOpacity = 0,
+              label=~SEN_DIST,
+              popup = PopupSenate,
+              highlight = highlightOptions(
+                weight = 5,
+                color = "#666",
+                dashArray = "",
+                fillOpacity = 0,
+                bringToFront = TRUE),
+              group = "State Senate Districts") %>% 
+  addPolygons(data = EJbgs,
+              # fillColor = "red",
+              weight = 2,
+              opacity = 1,
+              color = "purple",
+              dashArray = 3,
+              fillOpacity = 0,
+              label=~TOWN,
+              popup = PopupEJ,
+              highlight = highlightOptions(
+                weight = 5,
+                color = "#666",
+                dashArray = "",
+                fillOpacity = 0,
+                bringToFront = TRUE),
+              group = "Environmental Justice communities") %>% 
+  addPolygons(data = ma_blkgrps_sf_UHI24h, 
+              color = ~pal(UHI24avg),
+              weight = 0.5,
+              opacity = 0.7,
+              # color = "white",
+              dashArray = 3,
+              fillOpacity = 0.7,
+              label=~TOWN, 
+              popup = Popup,
+              highlight = highlightOptions(
+                weight = 5,
+                color = "#666",
+                dashArray = "",
+                fillOpacity = 0.7,
+                bringToFront = TRUE)) %>% 
+  addLegend(title = "Highest Day-Night<br>Urban Heat Island<br>effects (°F) and<br>High Priority Pops", 
+            pal = pal,
+            values = ma_blkgrps_sf_UHI24h$UHI24avg,
+            position = "bottomleft",
+            labFormat = function(type, cuts, p) {
+              n = length(cuts)
+              p = paste0(round(p * 100), '%')
+              cuts = paste0(formatC(cuts[-n], big.mark = ",", digits = 1, 
+                                    format = "f"), " - ", 
+                            formatC(cuts[-1], big.mark = ",", digits = 1, 
+                                    format = "f"))
+              }) %>% 
+  setView(lng = -71.7, 42.1, zoom = 8) %>% 
+  # addMiniMap() %>% 
+  addScaleBar(position = "bottomright") %>% 
+  addSearchFeatures(targetGroups  = 'muni', 
+                    options = searchFeaturesOptions(zoom=14, openPopup=TRUE, hideMarkerOnCollapse=T)) %>% 
+  addLayersControl(
+    overlayGroups = c("Environmental Justice communities", "State House Districts","State Senate Districts"),
+    options = layersControlOptions(collapsed = TRUE)
+  ) %>% 
+  hideGroup(c("Environmental Justice communities", "State House Districts","State Senate Districts"))
+```
+
+<br>
+
+<br>
+
+### Night
+```{r mapNight, fig.align="left", fig.cap="Map of Census block groups with the highest concentrations of one or more priority populations AND highest nighttime average land surface temperatures (LST)."}
+# create color palette
+pal <- colorQuantile(
+  palette = "YlOrRd",
+  domain = ma_blkgrps_sf_Night$meanNightLST,
+  n = 5)
+
+# binpal <- colorBin(
+#   palette = "YlOrRd",
+#   domain = ma_blkgrps_sf_Night$meanNightLST,
+#   bins = 5, pretty = FALSE
+# )
+
+PopupEJ <- paste0(EJbgs$NAME, "<br/>",
+                      "<b>Town:</b> ", EJbgs$TOWN, "<br/>",
+                  "<b>State House District:</b> ", EJbgs$REP_DIST, "<br/>",
+                  "<b>State Senate District:</b> ", EJbgs$SEN_DIST, "<br/>",
+                      "<b>Environmental Justice categories: </b>", EJbgs$EJlabel, "<br/>",
+                  "<b>Night Avg Temp (°F):</b> ", round(EJbgs$meanNightLST,1),"°", "<br/>",
+                      "<b>Night Avg Temp percentile: </b>", round(EJbgs$meanNightLSTpctile*100,0))
+
+PopupHouse <- paste0("Massachusetts state House District ", "<b>",house_districts$REP_DIST,"</b>", " has ", "<b>",house_districts$BGs80thNight,"</b>", " <b>Block Groups</b> with high percentages of priority populations experiencing nighttime average land surface temperatures at the 80th percentile - ", round(min(ma_blkgrps_sf_Night$meanNightLST),1),"° - or higher.", "<br/>",
+                     "<b>MIN Night Avg Temp (°F):</b> ", round(house_districts$meanNightLST.min,1),"°", "<br/>",
+                     "<b>MEAN Night Avg Temp (°F):</b> ", round(house_districts$meanNightLST.mean,1),"°", "<br/>",
+                     "<b>MAX Night Avg Temp (°F):</b> ", round(house_districts$meanNightLST.max,1),"°")
+
+PopupSenate <- paste0("Massachusetts state Senate District ", "<b>",senate_districts$SEN_DIST,"</b>", " has ", "<b>",senate_districts$BGs80thNight,"</b>", " <b>Block Groups</b> with high percentages of priority populations experiencing nighttime average land surface temperatures at the 80th percentile - ", round(min(ma_blkgrps_sf_Night$meanNightLST),1),"° - or higher.", "<br/>",
+                     "<b>MIN Night Avg Temp (°F):</b> ", round(senate_districts$meanNightLST.min,1),"°", "<br/>",
+                     "<b>MEAN Night Avg Temp (°F):</b> ", round(senate_districts$meanNightLST.mean,1),"°", "<br/>",
+                     "<b>MAX Night Avg Temp (°F):</b> ", round(senate_districts$meanNightLST.max,1),"°")
+
+Popup <- paste0(ma_blkgrps_sf_Night$NAME, "<br/>",
+                "<b>State House District:</b> ", ma_blkgrps_sf_Night$REP_DIST, "<br/>",
+                  "<b>State Senate District:</b> ", ma_blkgrps_sf_Night$SEN_DIST, "<br/>",
+                      "<b>Town:</b> ", ma_blkgrps_sf_Night$TOWN, "<br/>",
+                      "<b>Night Avg Temp (°F):</b> ", round(ma_blkgrps_sf_Night$meanNightLST,1),"°", "<br/>",
+         "<b>Night Avg Temp percentile:</b> ", round(ma_blkgrps_sf_Night$meanNightLSTpctile*100,0), "<br/>",
+                      "<b>Priority Populations: </b>", ma_blkgrps_sf_Night$POPSlabel)
+
+leaflet(width = "100%") %>% 
+  addProviderTiles(providers$Stamen.TonerLite) %>% 
+  addPolygons(data = ma_towns_simple,
+              weight = 0.7,
+              opacity = 1,
+              color = "gray",
+              fillOpacity = 0,
+              label=~NAME, popup=~NAMELSAD, group='muni') %>% 
+  addPolygons(data = house_districts,
+              weight = 2,
+              opacity = 1,
+              color = "blue",
+              dashArray = 3,
+              fillOpacity = 0,
+              # fillColor = "blue",
+              label = ~REP_DIST,
+              popup = PopupHouse,
+              highlight = highlightOptions(
+                weight = 5,
+                color = "#666",
+                dashArray = "",
+                fillOpacity = 0,
+                bringToFront = TRUE),
+              group = "State House Districts") %>% 
+  addPolygons(data = senate_districts,
+              # fillColor = "red",
+              weight = 2,
+              opacity = 1,
+              color = "green",
+              dashArray = 3,
+              fillOpacity = 0,
+              label=~SEN_DIST,
+              popup = PopupSenate,
+              highlight = highlightOptions(
+                weight = 5,
+                color = "#666",
+                dashArray = "",
+                fillOpacity = 0,
+                bringToFront = TRUE),
+              group = "State Senate Districts") %>% 
+  addPolygons(data = EJbgs,
+              # fillColor = "red",
+              weight = 2,
+              opacity = 1,
+              color = "purple",
+              dashArray = 3,
+              fillOpacity = 0,
+              label=~TOWN,
+              popup = PopupEJ,
+              highlight = highlightOptions(
+                weight = 5,
+                color = "#666",
+                dashArray = "",
+                fillOpacity = 0,
+                bringToFront = TRUE),
+              group = "Environmental Justice communities") %>% 
+  addPolygons(data = ma_blkgrps_sf_Night, 
+              color = ~pal(meanNightLST),
+              weight = 0.5,
+              opacity = 0.7,
+              # color = "white",
+              dashArray = 3,
+              fillOpacity = 0.7,
+              label=~TOWN, 
+              popup = Popup,
+              highlight = highlightOptions(
+                weight = 5,
+                color = "#666",
+                dashArray = "",
+                fillOpacity = 0.7,
+                bringToFront = TRUE)) %>% 
+  addLegend(title = "Highest Nighttime<br>Avg LST (°F) and<br>High Priority Pops", 
+            pal = pal,
+            values = ma_blkgrps_sf_Night$meanNightLST,
+            position = "bottomleft",
+            labFormat = function(type, cuts, p) {
+              n = length(cuts)
+              p = paste0(round(p * 100), '%')
+              cuts = paste0(formatC(cuts[-n], big.mark = ",", digits = 1, 
+                                    format = "f"), " - ", 
+                            formatC(cuts[-1], big.mark = ",", digits = 1, 
+                                    format = "f"))
+              }) %>% 
+  setView(lng = -71.7, 42.1, zoom = 8) %>% 
+  # addMiniMap() %>% 
+  addScaleBar(position = "bottomright") %>% 
+  addSearchFeatures(targetGroups  = 'muni', 
+                    options = searchFeaturesOptions(zoom=14, openPopup=TRUE, hideMarkerOnCollapse=T)) %>% 
+  addLayersControl(
+    overlayGroups = c("Environmental Justice communities", "State House Districts","State Senate Districts"),
+    options = layersControlOptions(collapsed = TRUE)
+  ) %>% 
+  hideGroup(c("Environmental Justice communities", "State House Districts","State Senate Districts"))
+```
+
+<br>
+
+<br>
+
+### About the maps
+
+These maps show communities (i.e. Census Block Groups) with high percentages of one or more priority population groups (80th percentile for the state) *AND* that experience the highest levels of ambient heat - measured as Land Surface Temperature (LST) - or Urban Heat Island (UHI) effects. The heat risk analysis presented here is based on Land Surface Temperatures (LST) derived from NASA’s
+[Moderate-resolution Imaging Spectroradiometer (MODIS)](https://modis.gsfc.nasa.gov/data/dataprod/mod11.php) satellite sensor. The three specific heat metrics highlighted here include: day-night average LST in the 80th percentile (i.e., `r round(min(ma_blkgrps_sf_DayNight$meanAvgLST),1)`°F or warmer), day-night average urban heat island effects in the 80th percentile (i.e., `r round(min(ma_blkgrps_sf_UHI24h$UHI24avg),1)`°F or warmer), and nighttime average LST in the 80th percentile (i.e., `r round(min(ma_blkgrps_sf_Night$meanNightLST),1)`°F or warmer). These metrics are three of the six heat metrics used to calculate [cumulative Heat burdens](index.html).
+
+Priority populations represent demographic groups that environmental justice policy and research have identified as being especially vulnerable to environmental burdens as a consequence of social or economic disadvantage, physical vulnerability, or historic and persistent discrimination and inequality. These include:
+
+* People of color (i.e., persons who are of Hispanic ethnicity or racially not White)
+* Low income persons (i.e., income less than 200% of the poverty line)
+* Limited English speaking households (i.e., households where no adult speaks English "very well")
+* Adults 25 years or older without a high school diploma
+* Children under the age of 5
+* Adults over the age of 64
+* Environmental Justice communities defined by state policy
+
+
+Metrics of heat:
+
+* Day-Night Average LST: Day-Night Average Land Surface Temperatures (LST) represent a simple average of LST values collected during the day (11:48am - 2pm) and during the night (12am - 3:06am) over eight days, from July 28 to
+August 4, 2019 derived from NASA’s
+[Moderate-resolution Imaging Spectroradiometer (MODIS)](https://modis.gsfc.nasa.gov/data/dataprod/mod11.php) satellite sensor. Values are presented in degrees of Fahrenheit (°F). 
+
+* Day-Night Average UHI: Urban Heat Island (UHI) effects refer to the difference in temperature between urban and rural areas of the state. Urban areas tend to be warmer than rural areas due to the heat-retaining qualities of concrete, asphalt and other impervious surfaces, as well as the relative absence of vegetation. The higher the UHI effect, the warmer an area is relative to the rural background. For this analysis UHI was measured as the difference between LST values across Massachusetts for each time period and the average LST for rural areas of the state for the same time periods. UHI is represented by the
+following formula: UHI effect = LST - Mean Rural LST. LST is the land surface temperature for a satellite image pixel and Mean Rural LST is the average LST for satellite image pixels in rural areas of the state. 
+
+* Nighttime Average LST: Nighttime Land Surface Temperatures represent LST values collected during the night (12am - 3:06am) for the period July 28 to August 4, 2019. Values are presented in degrees of Fahrenheit (°F). High nighttime temperatures carry added significance for concerns about heat risk. Research has repeatedly shown that exposure to high nighttime temperatures over several days increases the probability of death during a heat wave in urban areas, especially for the elderly.
+
+<br>
+
+<br>
+
+## Population-weighted heat exposure for priority populations {.tabset}
+
+### Day-Night Avg LST
+```{r graphDayNight, fig.align="center", fig.cap="Population-weighted average exposures to day-night average temperatures for populations of concern in Massachusetts."}
+# Add status variable and recode demographic names
+LST24hrPop %>% 
+  mutate(
+    Status = case_when(
+           Group == "Total Pop" ~ "State avg",
+           LST24hrwMean < pull(LST24hrPop[LST24hrPop$Group=="Total Pop",2]) ~ "Below state avg",
+           LST24hrwMean > pull(LST24hrPop[LST24hrPop$Group=="Total Pop",2]) ~ "Above state avg"),
+    Group = recode(Group, "Minority" = "People of Color",
+                        "No HS Dip" = "No HS Diploma")) %>% 
+  mutate(Group = factor(Group) %>% fct_reorder(LST24hrwMean, .desc = TRUE)) %>% 
+  mutate(group_index = as.numeric(Group)) %>% 
+  hchart(., "bar", hcaes(x = group_index, y = LST24hrwMean, 
+                         group = Status, name = Group), 
+                         color = c("#F7A35C", "#7CB5EC", "#000000"),
+         pointWidth = 15) %>% 
+  hc_yAxis(title = list(text = "Population-weighted mean temperature (°F)"),
+           labels = list(format = "{value}°"), 
+           floor = 72, ceiling = 85) %>% 
+  hc_xAxis(title = NULL, type = "category", labels = list(step = 1)) %>% 
+  hc_tooltip(pointFormat = "{series.name}: {point.y}°") %>% 
+  hc_title(text = "Population−Weighted Mean Day−Night Average Land Surface Temperature (°F) Exposure", useHTML = TRUE)
+```
+
+<br>
+
+<br>
+
+### Urban Heat Island
+```{r graphUHI, fig.align="center", fig.cap="Population-weighted average exposures to day-night average temperatures for populations of concern in Massachusetts."}
+# Add status variable and recode demographic names
+UHI24hrPop %>% 
+  mutate(
+    Status = case_when(
+           Group == "Total Pop" ~ "State avg",
+           UHI24hrwMean < pull(UHI24hrPop[UHI24hrPop$Group=="Total Pop",2]) ~ "Below state avg",
+           UHI24hrwMean > pull(UHI24hrPop[UHI24hrPop$Group=="Total Pop",2]) ~ "Above state avg"),
+    Group = recode(Group, "Minority" = "People of Color",
+                        "No HS Dip" = "No HS Diploma")) %>% 
+  mutate(Group = factor(Group) %>% fct_reorder(UHI24hrwMean, .desc = TRUE)) %>% 
+  mutate(group_index = as.numeric(Group)) %>% 
+  hchart(., "bar", hcaes(x = group_index, y = UHI24hrwMean, 
+                         group = Status, name = Group), 
+                         color = c("#F7A35C", "#7CB5EC", "#000000"),
+         pointWidth = 15) %>% 
+  hc_yAxis(title = list(text = "Population-weighted mean Urban Heat Island effect (°F)"),
+           labels = list(format = "+{value}°"),
+           ceiling = 12) %>% 
+  hc_xAxis(title = NULL, type = "category", labels = list(step = 1)) %>% 
+  hc_tooltip(pointFormat = "{series.name}: +{point.y}°") %>% 
+  hc_title(text = "Population−Weighted Mean Exposure to Day−Night Average Urban Heat Island effect (°F)", useHTML = TRUE)
+```
+
+<br>
+
+<br>
+
+### Nighttime Avg LST
+```{r graphNight, fig.align="center", fig.cap="Population-weighted average exposures to nighttime average temperatures for populations of concern in Massachusetts."}
+# Add status variable and recode demographic names
+LSTNightPop %>% 
+  mutate(
+    Status = case_when(
+           Group == "Total Pop" ~ "State avg",
+           LSTNightwMean < pull(LSTNightPop[LSTNightPop$Group=="Total Pop",2]) ~ "Below state avg",
+           LSTNightwMean > pull(LSTNightPop[LSTNightPop$Group=="Total Pop",2]) ~ "Above state avg"),
+    Group = recode(Group, "Minority" = "People of Color",
+                        "No HS Dip" = "No HS Diploma")) %>% 
+  mutate(Group = factor(Group) %>% fct_reorder(LSTNightwMean, .desc = TRUE)) %>% 
+  mutate(group_index = as.numeric(Group)) %>% 
+  hchart(., "bar", hcaes(x = group_index, y = LSTNightwMean, 
+                         group = Status, name = Group), 
+                         color = c("#F7A35C", "#7CB5EC", "#000000"),
+         pointWidth = 15) %>% 
+  hc_yAxis(title = list(text = "Population-weighted mean temperature (°F)"),
+           labels = list(format = "{value}°"), 
+           floor = 63, ceiling = 68) %>% 
+  hc_xAxis(title = NULL, type = "category", labels = list(step = 1)) %>% 
+  hc_tooltip(pointFormat = "{series.name}: {point.y}°") %>% 
+  hc_title(text = "Population−Weighted Mean Nighttime Average Land Surface Temperature (°F) Exposure", useHTML = TRUE)
+```
+
+<br>
+
+<br>
+
+### About the graphs
+
+These graphs show population-weighted heat exposure by group for the following temperature metrics: 
+
+* Day-Night Average LST: Day-Night Average Land Surface Temperatures (LST) represent a simple average of LST values collected during the day (11:48am - 2pm) and during the night (12am - 3:06am) over eight days, from July 28 to
+August 4, 2019 derived from NASA’s
+[Moderate-resolution Imaging Spectroradiometer (MODIS)](https://modis.gsfc.nasa.gov/data/dataprod/mod11.php) satellite sensor. Values are presented in degrees of Fahrenheit (°F). 
+
+* Day-Night Average UHI: Urban Heat Island (UHI) effects refer to the difference in temperature between urban and rural areas of the state. Urban areas tend to be warmer than rural areas due to the heat-retaining qualities of concrete, asphalt and other impervious surfaces, as well as the relative absence of vegetation. The higher the UHI effect, the warmer an area is relative to the rural background. For this analysis UHI was measured as the difference between LST values across Massachusetts for each time period and the average LST for rural areas of the state for the same time periods. UHI is represented by the
+following formula: UHI effect = LST - Mean Rural LST. LST is the land surface temperature for a satellite image pixel and Mean Rural LST is the average LST for satellite image pixels in rural areas of the state. 
+
+* Nighttime Average LST: Nighttime Land Surface Temperatures represent LST values collected during the night (12am - 3:06am) for the period July 28 to August 4, 2019. Values are presented in degrees of Fahrenheit (°F). High nighttime temperatures carry added significance for concerns about heat risk. Research has repeatedly shown that exposure to high nighttime temperatures over several days increases the probability of death during a heat wave in urban areas, especially for the elderly.
+
+For example, limited English speaking households, as identified by state environmental justice policy (i.e., 'MA Limited English HH'), reside in Census block groups that experience population-weighted average day-night land surface temperatures of over `r round(LST24hrPop %>% filter(Group == "MA Limited English HH") %>% select(LST24hrwMean) %>% pull(),1)`°F. Compare this to the state average (i.e., 'Total Pop') of `r round(LST24hrPop %>% filter(Group == "Total Pop") %>% select(LST24hrwMean) %>% pull(),1)`°F. With regard to the Urban Heat Island (UHI) effect, all groups experience average day-night temperatures above the rural background. Limited English speaking households, as identified by state environmental justice policy (i.e., 'MA Limited English HH'), experience population-weighted average day-night land surface temperatures that are approximately `r round(UHI24hrPop %>% filter(Group == "MA Limited English HH") %>% select(UHI24hrwMean) %>% pull(),1)`°F warmer than the rural background.
+
+<br>
+
+<br>
+
+## Heat Burdens by Jurisdiction {.tabset}
+
+### By municipality
+
+```{r townTable, fig.align="center"}
+# create object to hold complex headers for table
+sketch1 = htmltools::withTags(table(
+  class = 'display',
+  thead(
+    tr(
+      th(rowspan = 2, 'City/Town'),
+      th(align="center", colspan = 2, 'Avg Day-Night LST'),
+      th(align="center", colspan = 2, 'Avg Day-Night UHI'),
+      th(align="center", colspan = 2, 'Avg Night LST')
+    ),
+    tr(
+      lapply(rep(c('Temp (°F)', 'Rank'), 3), th)
+    )
+  )
+))
+
+ma_towns %>% 
+  as.data.frame() %>% 
+  filter(NAME != "County subdivisions not defined") %>%
+  select(NAME, meanAvgLST.mean, pctrank_meanAvgLST.mean, UHI24avg.mean,
+         pctrank_UHI24avg.mean, meanNightLST.mean, 
+         pctrank_meanNightLST.mean) %>% 
+  arrange(NAME) %>% 
+  datatable(., rownames = FALSE, options = list(pageLength = 10), 
+            container = sketch1) %>% 
+  formatRound(., columns = c(3,5,7), digits = 1, mark = ",") %>% 
+  formatCurrency(., columns = c(2,4,6), currency = "°", before = FALSE, 
+                 digits = 1)
+```
+
+<!-- > Number of Census block groups with three or more cumualtive environmental burdens and high concentrations of populations of concern -->
+<br>
+
+<br>
+
+### By state house district
+
+```{r houseTable, fig.align="center"}
+# create object to hold complex headers for table
+sketch2 = htmltools::withTags(table(
+  class = 'display',
+  thead(
+    tr(
+      th(rowspan = 2, 'House District'),
+      th(align="center", colspan = 2, 'Avg Day-Night LST'),
+      th(align="center", colspan = 2, 'Avg Day-Night UHI'),
+      th(align="center", colspan = 2, 'Avg Night LST')
+    ),
+    tr(
+      lapply(rep(c('Temp (°F)', 'Rank'), 3), th)
+    )
+  )
+))
+
+house_districts %>% 
+  as.data.frame() %>% 
+  select(REP_DIST, meanAvgLST.mean, pctrank_meanAvgLST.mean, UHI24avg.mean,
+         pctrank_UHI24avg.mean, meanNightLST.mean, 
+         pctrank_meanNightLST.mean) %>% 
+  arrange(REP_DIST) %>% 
+  datatable(., rownames = FALSE, options = list(pageLength = 10), 
+            container = sketch2) %>% 
+  formatRound(., columns = c(3,5,7), digits = 1, mark = ",") %>% 
+  formatCurrency(., columns = c(2,4,6), currency = "°", before = FALSE, 
+                 digits = 1)
+```
+
+<br>
+
+<br>
+
+### By state senate district
+
+```{r senateTable, fig.align="center"}
+# create object to hold complex headers for table
+sketch3 = htmltools::withTags(table(
+  class = 'display',
+  thead(
+    tr(
+      th(rowspan = 2, 'Senate District'),
+      th(align="center", colspan = 2, 'Avg Day-Night LST'),
+      th(align="center", colspan = 2, 'Avg Day-Night UHI'),
+      th(align="center", colspan = 2, 'Avg Night LST')
+    ),
+    tr(
+      lapply(rep(c('Temp (°F)', 'Rank'), 3), th)
+    )
+  )
+))
+
+senate_districts %>% 
+  as.data.frame() %>% 
+  select(SEN_DIST, meanAvgLST.mean, pctrank_meanAvgLST.mean, UHI24avg.mean,
+         pctrank_UHI24avg.mean, meanNightLST.mean, 
+         pctrank_meanNightLST.mean) %>% 
+  arrange(SEN_DIST) %>% 
+  datatable(., rownames = FALSE, options = list(pageLength = 10), 
+            container = sketch3) %>% 
+  formatRound(., columns = c(3,5,7), digits = 1, mark = ",") %>% 
+  formatCurrency(., columns = c(2,4,6), currency = "°", before = FALSE, 
+                 digits = 1)
+```
+
+<br>
+
+<br>
+
+### About the tables
+
+These tables show the average day-night land surface temperatures (LST), Urban Heat Island (UHI) effects, and average nighttime LST by jurisdiction for July-August 2019. LST values are averaged across Census block groups within the jurisdiction. A rank indicates the percentage of jurisdictions that are below that value. For example, Boston had a Day-Night average Land Surface Temperature (LST) of 84.8° Fahrenheit, and a Day-Night LST rank of 98.3. The latter means that Boston's average LST was higher than 98.3% of all other municipalities in the state.
+
+* Day-Night Average LST: Day-Night Average Land Surface Temperatures (LST) represent a simple average of LST values collected during the day (11:48am - 2pm) and during the night (12am - 3:06am) over eight days, from July 28 to
+August 4, 2019 derived from NASA’s
+[Moderate-resolution Imaging Spectroradiometer (MODIS)](https://modis.gsfc.nasa.gov/data/dataprod/mod11.php) satellite sensor. Values are presented in degrees of Fahrenheit (°F). 
+
+* Day-Night Average UHI: Urban Heat Island (UHI) effects refer to the difference in temperature between urban and rural areas of the state. Urban areas tend to be warmer than rural areas due to the heat-retaining qualities of concrete, asphalt and other impervious surfaces, as well as the relative absence of vegetation. The higher the UHI effect, the warmer an area is relative to the rural background. For this analysis UHI was measured as the difference between LST values across Massachusetts for each time period and the average LST for rural areas of the state for the same time periods. UHI is represented by the
+following formula: UHI effect = LST - Mean Rural LST. LST is the land surface temperature for a satellite image pixel and Mean Rural LST is the average LST for satellite image pixels in rural areas of the state. 
+
+* Nighttime Average LST: Nighttime Land Surface Temperatures represent LST values collected during the night (12am - 3:06am) for the period July 28 to August 4, 2019. Values are presented in degrees of Fahrenheit (°F). High nighttime temperatures carry added significance for concerns about heat risk. Research has repeatedly shown that exposure to high nighttime temperatures over several days increases the probability of death during a heat wave in urban areas, especially for the elderly.
+
+<br>
+
+<br>
+
+<br>
+
+<br>

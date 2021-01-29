@@ -1,0 +1,24 @@
+---
+title: "About This Website"
+---
+
+This website supplements a larger project for the [Massachusetts Conservation Law Foundation](https://www.clf.org/serving-new-england/massachusetts/) to provide guidance on policy recommendations for transportation investments that promote social and environmental equity and mitigate or prevent disparities and inequities in access to benefits and exposure to burdens. 
+
+The objectives of this analysis were to identify the geographic and demographic characteristics of communities that are:
+
+1. overburdened by current transportation-related emissions and related externalities; 
+2. at increased risk for heat island effects, which is exacerbated by climate change and transportation related air pollution;
+3. likely to experience evacuation risks and other transportation-related vulnerabilities resulting from flooding, extreme weather, and other climate stressors, and
+4. underserved by current public transit infrastructure or services and overburdened by transportation related costs.
+
+Demographic data for the analysis came from the U.S. Census American Community Survey 5-year estimates, 2014 - 2018. 
+Air emissions, air pollutant concentrations, and air pollutant risk data came from the [U.S. Environmental Protection Agency's EJSCREEN online tool](https://www.epa.gov/ejscreen). 
+Heat risk analysis was based on satellite-derived land surface temperatures from [NASA's MODIS platform](https://modis.gsfc.nasa.gov/data/dataprod/mod11.php). 
+Evacuation risk was analyzed using the Federal Emergency Management Agency's (FEMA) [National Flood Hazard Layer](https://msc.fema.gov/portal/advanceSearch), hurricane evacuation zones from state emergency agencies, and projected hurricane storm surge extents from the [National Weather Service's National Hurricane Center and U.S. Army Corps of Engineers SLOSH modeling](https://www.nhc.noaa.gov/nationalsurge/). 
+Transportation data included transit lines and routes from state agencies, average headways based on GTFS data from state transit agencies and open data providers such as Trillium and OpenMobility, [walkability scores](https://www.epa.gov/smartgrowth/smart-location-mapping#walkability) from the EPA, and transportation cost burdens based on the U.S. Department of Housing and Urban Development's (HUD) [Location Affordability Index](https://www.hudexchange.info/programs/location-affordability-index/about/). 
+
+This online application is built with [R version 4.0.3 (R Core Team, 2020)](https://www.r-project.org/) using the [R Markdown](https://rmarkdown.rstudio.com/) package in Rstudio. Charts, tables, and maps use [Highcharts](http://www.highcharts.com/),  [DataTables](https://datatables.net/), and [Leaflet.js](http://leafletjs.com/), respectively, all accessed through their corresponding R packages.  
+
+Research code for this analysis will be formally released at a later date.
+
+Please direct feedback, suggestions, or questions about this website to Marcos Luna - mluna@salemstate.edu
