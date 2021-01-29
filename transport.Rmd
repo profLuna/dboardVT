@@ -25,74 +25,75 @@ library(tidycensus)
 ```
 
 ```{r data, include=FALSE, cache=TRUE}
-# Read in no transit access. Whole census units with no transit access. Includes ma_busBuff400m_sf with counts of pop with access to bus. 
-load("../DATA/transport/MA/noTransit.Rds")
+# Read in no transit access. Whole census units with no transit access. Includes vt_busBuff400m_sf with counts of pop with access to bus. 
+load("../DATA/transport/VT/noTransit.Rds")
 
 # Read in 80th percentile headways. Whole census units with average headways exceeding 80th percentile headway for all routes.
-load("../DATA/transport/MA/headway80th.Rds")
+load("../DATA/transport/VT/headway80th.Rds")
 
 # Read in walkability data. Whole census units with walkability scores. Need to isolate least walkable as <= 5.8
-load("../DATA/transport/MA/walkability.Rds")
+load("../DATA/transport/VT/walkability.Rds")
 
 # Read in transportation cost burden data. Whole census units. Need to isolate 80th percentile. 
-load("../DATA/transport/MA/costBurden.Rds")
+load("../DATA/transport/VT/costBurden.Rds")
 
 # load("DATA/ne_layers.rds")
-ma_blkgrps_sf <- readRDS(file = "../DATA/ma_blkgrps_sf_CUM.Rds")
+vt_blkgrps_sf <- readRDS(file = "../DATA/vt_blkgrps_sf_CUM.Rds")
 
 #create layer of municipalities
-ma_towns <- county_subdivisions("MA") %>% 
+vt_towns <- county_subdivisions("VT") %>% 
   st_transform(., crs = 4326) %>% 
   select(NAME,NAMELSAD)
 
 # Assign municipality names to block groups
-ma_blkgrps_sf <- county_subdivisions("MA") %>% 
-  st_transform(., crs = st_crs(ma_blkgrps_sf)) %>% 
+vt_blkgrps_sf <- county_subdivisions("VT") %>% 
+  st_transform(., crs = st_crs(vt_blkgrps_sf)) %>% 
   transmute(TOWN = NAME) %>% 
-  st_join(ma_blkgrps_sf, ., largest = TRUE) %>% 
-  mutate(NAME = str_remove_all(NAME, ", Massachusetts")) %>% 
+  st_join(vt_blkgrps_sf, ., largest = TRUE) %>% 
+  mutate(NAME = str_remove_all(NAME, ", Vermont")) %>% 
   st_transform(., crs = 4326)
 
 # create layer of state house districts
-house_districts <- st_read("../DATA/shapefiles/house2012",
-                            "HOUSE2012_POLY") %>% 
-  select(REP_DIST) %>% 
+house_districts <- st_read(
+  "../DATA/shapefiles/VT_Data_-_Vermont_House_Districts_2012-shp",
+  "VT_Data_-_Vermont_House_Districts_2012") %>% 
+  transmute(REP_DIST = NAME) %>% 
   st_transform(., crs = 4326) %>% 
   st_make_valid()
 
 # create layer of state senate districts
-senate_districts <- st_read("../DATA/shapefiles/senate2012",
-                            "SENATE2012_POLY") %>% 
-  select(SEN_DIST) %>% 
+senate_districts <- st_read("../DATA/shapefiles/VT_Senate_Districts_2012-shp",
+                            "VT_Senate_Districts_2012") %>% 
+  transmute(SEN_DIST = NAME) %>% 
   st_transform(., crs = 4326) %>% 
   st_make_valid()
 
 # Assign state house district names to block groups
-ma_blkgrps_sf <- house_districts %>% 
+vt_blkgrps_sf <- house_districts %>% 
   select(REP_DIST) %>% 
-  st_join(ma_blkgrps_sf, ., largest = TRUE)
+  st_join(vt_blkgrps_sf, ., largest = TRUE)
 
 # Assign state senate district names to block groups
-ma_blkgrps_sf <- senate_districts %>% 
+vt_blkgrps_sf <- senate_districts %>% 
   select(SEN_DIST) %>% 
-  st_join(ma_blkgrps_sf, ., largest = TRUE)
+  st_join(vt_blkgrps_sf, ., largest = TRUE)
 
 # identify block groups with no bus access
-ma_blkgrps_sf <- ma_blkgrps_sf_noBus %>% 
+vt_blkgrps_sf <- vt_blkgrps_sf_noBus %>% 
   as.data.frame() %>% 
   transmute(GEOID = GEOID, NoBusAccess = "Y") %>% 
-  left_join(ma_blkgrps_sf,., by = "GEOID") %>% 
+  left_join(vt_blkgrps_sf,., by = "GEOID") %>% 
   replace_na(list(NoBusAccess = "N"))
 
 # join avg bus headways to each block group
-ma_blkgrps_sf <- ma_blkgrps_sf %>% 
-  left_join(., ma_bus_stopHeadway_df, by = "GEOID")
+vt_blkgrps_sf <- vt_blkgrps_sf %>% 
+  left_join(., vt_bus_stopHeadway_df, by = "GEOID")
 
 # join walkability scores and add category labels
-ma_blkgrps_sf <- ma_blkgrp_walkability_sf %>% 
+vt_blkgrps_sf <- vt_blkgrp_walkability_sf %>% 
   as.data.frame() %>% 
   select(GEOID, NatWalkInd) %>% 
-  left_join(ma_blkgrps_sf, ., by = "GEOID") %>% 
+  left_join(vt_blkgrps_sf, ., by = "GEOID") %>% 
   mutate(WalkCat = case_when(
     NatWalkInd < 5.76 ~ "Least Walkable",
     NatWalkInd >= 5.76 & NatWalkInd < 10.51 ~ "Below Avg Walkable",
@@ -101,13 +102,13 @@ ma_blkgrps_sf <- ma_blkgrp_walkability_sf %>%
   ))
 
 # join transport cost burden data
-ma_blkgrps_sf <- lai_ma_blkgrp %>% 
+vt_blkgrps_sf <- lai_vt_blkgrp %>% 
   as.data.frame() %>% 
   select(GEOID, hh7_t, hh7_h) %>% 
-  left_join(ma_blkgrps_sf, ., by = "GEOID")
+  left_join(vt_blkgrps_sf, ., by = "GEOID")
 
 # Create labeling variables to identify pops of a concern in a given block group that contributed to cumulative burden score
-ma_blkgrps_sf <- ma_blkgrps_sf %>% 
+vt_blkgrps_sf <- vt_blkgrps_sf %>% 
   mutate(Minority80th = if_else(percent_rank(minority_pctE) >= 0.8, "People of Color","NA"),
     Under5_80th = if_else(percent_rank(pct_under5E) >= 0.8, "Under 5", "NA"),
     Under18_80th = if_else(percent_rank(pct_under18E) >= 0.8, "Under 18", "NA"),
@@ -115,9 +116,6 @@ ma_blkgrps_sf <- ma_blkgrps_sf %>%
     lths80th = if_else(percent_rank(pct_lthsE) >= 0.8, "No HS Diploma", "NA"),
     pct2pov80th = if_else(percent_rank(pct2povE) >= 0.8, "Low Income", "NA"),
     eng_limit_pct80th = if_else(percent_rank(eng_limit_pctE) >= 0.8, "Limited English HH", "NA"),
-    MA_INCOME_80th = if_else(MA_INCOME == "I", "MA Low Income", "NA"),
-    MA_MINORITY_80th = if_else(MA_MINORITY == "M", "MA Minority", "NA"),
-    MA_ENGLISH_80th = if_else(MA_ENGLISH == "E", "MA Limited English HH", "NA"),
     POPSlabel = gsub("^,*|(?<=,),|,*$", "", # get rid of extra commas
     str_remove_all( # get rid of NAs
       paste(Minority80th,
@@ -126,10 +124,7 @@ ma_blkgrps_sf <- ma_blkgrps_sf %>%
             Over64_80th,
             lths80th,
             pct2pov80th,
-            eng_limit_pct80th,
-            MA_INCOME_80th,
-            MA_MINORITY_80th,
-            MA_ENGLISH_80th, sep = ","),
+            eng_limit_pct80th, sep = ","),
       pattern = "NA"), 
     perl=T
     ),
@@ -140,29 +135,8 @@ ma_blkgrps_sf <- ma_blkgrps_sf %>%
     )
   # filter(POPSlabel != "No Pops of Concern")
 
-# create layer of EJ polygons
-EJbgs <- ma_blkgrps_sf %>% 
-  filter(MA_INCOME == "I" | MA_MINORITY == "M" | MA_ENGLISH == "E") %>% 
-  mutate(EJlabel = gsub("^,*|(?<=,),|,*$", "", # get rid of extra commas
-    str_remove_all( # get rid of NAs
-      paste(MA_INCOME_80th,
-            MA_MINORITY_80th,
-            MA_ENGLISH_80th, sep = ","),
-      pattern = "NA"), 
-    perl=T
-    )) %>% 
-  select(NAME, TOWN, REP_DIST, SEN_DIST, EJlabel, NoBusAccess, AvgStopHeadway, 
-         NatWalkInd, Walkpctile, WalkCat,Tcostpctile, hh7_t, hh7_h, Headwaypctile) %>% 
-  mutate(HeadwayLabel = if_else(is.na(AvgStopHeadway), 
-                            "NA - No Bus Access", 
-                            as.character(round(AvgStopHeadway,1))),
-         HeadwayPctileLabel = if_else(is.na(Headwaypctile), 
-                            "NA - No Bus Access", 
-                            as.character(round(Headwaypctile,1)))) %>% 
-  ms_simplify(., keep = 0.1, keep_shapes = TRUE)
-
 # create summary stats of transport values by municipality
-muniTransport <- ma_blkgrps_sf %>%
+muniTransport <- vt_blkgrps_sf %>%
   as.data.frame() %>% 
   select(TOWN, AvgStopHeadway, NatWalkInd, hh7_t) %>% 
   group_by(TOWN) %>% 
@@ -175,7 +149,7 @@ muniTransport <- ma_blkgrps_sf %>%
                 .names = "pctrank_{.col}"))
 
 # create summary of transport values by house district
-houseTransport <- ma_blkgrps_sf %>%
+houseTransport <- vt_blkgrps_sf %>%
   as.data.frame() %>% 
   select(REP_DIST, AvgStopHeadway, NatWalkInd, hh7_t) %>% 
   group_by(REP_DIST) %>% 
@@ -188,7 +162,7 @@ houseTransport <- ma_blkgrps_sf %>%
                 .names = "pctrank_{.col}"))
 
 # create summary of transport values by senate district
-senateTransport <- ma_blkgrps_sf %>%
+senateTransport <- vt_blkgrps_sf %>%
   as.data.frame() %>% 
   select(SEN_DIST, AvgStopHeadway, NatWalkInd, hh7_t) %>% 
   group_by(SEN_DIST) %>% 
@@ -201,19 +175,19 @@ senateTransport <- ma_blkgrps_sf %>%
                 .names = "pctrank_{.col}"))
 
 # Create counts of block groups with No Bus Access by jurisdiction
-muniNoBus <- ma_blkgrps_sf %>% 
+muniNoBus <- vt_blkgrps_sf %>% 
   as.data.frame() %>% 
   filter(NoBusAccess == "Y" & POPSlabel != "No Pops of Concern") %>% 
   group_by(TOWN) %>% 
   summarize(BGsNoBus = n())
 
-houseNoBus <- ma_blkgrps_sf %>% 
+houseNoBus <- vt_blkgrps_sf %>% 
   as.data.frame() %>% 
   filter(NoBusAccess == "Y" & POPSlabel != "No Pops of Concern") %>% 
   group_by(REP_DIST) %>% 
   summarize(BGsNoBus = n())
 
-senateNoBus <- ma_blkgrps_sf %>% 
+senateNoBus <- vt_blkgrps_sf %>% 
   as.data.frame() %>% 
   filter(NoBusAccess == "Y" & POPSlabel != "No Pops of Concern") %>% 
   group_by(SEN_DIST) %>% 
@@ -221,64 +195,64 @@ senateNoBus <- ma_blkgrps_sf %>%
 
 
 # Create counts of block groups at 80th percentile Headways by jurisdiction
-muniHwy_80th <- ma_blkgrps_sf %>% 
+muniHwy_80th <- vt_blkgrps_sf %>% 
   as.data.frame() %>% 
   filter(Headwaypctile >= 80 & POPSlabel != "No Pops of Concern") %>% 
   group_by(TOWN) %>% 
   summarize(BGs80thHwy = n())
 
-houseHwy_80th <- ma_blkgrps_sf %>% 
+houseHwy_80th <- vt_blkgrps_sf %>% 
   as.data.frame() %>% 
   filter(Headwaypctile >= 80 & POPSlabel != "No Pops of Concern") %>% 
   group_by(REP_DIST) %>% 
   summarize(BGs80thHwy = n())
 
-senateHwy_80th <- ma_blkgrps_sf %>% 
+senateHwy_80th <- vt_blkgrps_sf %>% 
   as.data.frame() %>% 
   filter(Headwaypctile >= 80 & POPSlabel != "No Pops of Concern") %>% 
   group_by(SEN_DIST) %>% 
   summarize(BGs80thHwy = n())
 
 # Create counts of block groups Least Walkable by jurisdiction
-muniWalk <- ma_blkgrps_sf %>% 
+muniWalk <- vt_blkgrps_sf %>% 
   as.data.frame() %>% 
   filter(WalkCat == "Least Walkable" & POPSlabel != "No Pops of Concern") %>% 
   group_by(TOWN) %>% 
   summarize(BGsLWalk = n())
 
-houseWalk <- ma_blkgrps_sf %>% 
+houseWalk <- vt_blkgrps_sf %>% 
   as.data.frame() %>% 
   filter(WalkCat == "Least Walkable" & POPSlabel != "No Pops of Concern") %>% 
   group_by(REP_DIST) %>% 
   summarize(BGsLWalk = n())
 
-senateWalk <- ma_blkgrps_sf %>% 
+senateWalk <- vt_blkgrps_sf %>% 
   as.data.frame() %>% 
   filter(WalkCat == "Least Walkable" & POPSlabel != "No Pops of Concern") %>% 
   group_by(SEN_DIST) %>% 
   summarize(BGsLWalk = n())
 
 # Create counts of block groups at 80th percentile transport cost burden by jurisdiction
-muniTcost_80th <- ma_blkgrps_sf %>% 
+muniTcost_80th <- vt_blkgrps_sf %>% 
   as.data.frame() %>% 
   filter(Tcostpctile >= 80 & POPSlabel != "No Pops of Concern") %>% 
   group_by(TOWN) %>% 
   summarize(BGs80thTcost = n())
 
-houseTcost_80th <- ma_blkgrps_sf %>% 
+houseTcost_80th <- vt_blkgrps_sf %>% 
   as.data.frame() %>% 
   filter(Tcostpctile >= 80 & POPSlabel != "No Pops of Concern") %>% 
   group_by(REP_DIST) %>% 
   summarize(BGs80thTcost = n())
 
-senateTcost_80th <- ma_blkgrps_sf %>% 
+senateTcost_80th <- vt_blkgrps_sf %>% 
   as.data.frame() %>% 
   filter(Tcostpctile >= 80 & POPSlabel != "No Pops of Concern") %>% 
   group_by(SEN_DIST) %>% 
   summarize(BGs80thTcost = n())
 
 # join stats to jurisdiction layers
-ma_towns <- ma_towns %>% 
+vt_towns <- vt_towns %>% 
   left_join(., muniTransport, by = c("NAME" = "TOWN")) %>% 
   left_join(., muniNoBus, by = c("NAME" = "TOWN")) %>% 
   left_join(., muniHwy_80th, by = c("NAME" = "TOWN")) %>% 
@@ -380,42 +354,42 @@ senate_districts <- senate_districts %>%
          ) %>% 
   ms_simplify(., keep = 0.1, keep_shapes = TRUE)
 
-# create layer of ma_blkgrp_sf for 80th percentile and thresholds
-ma_blkgrps_sf_NoBus <- ma_blkgrps_sf %>% 
+# create layer of vt_blkgrp_sf for 80th percentile and thresholds
+vt_blkgrps_sf_NoBus <- vt_blkgrps_sf %>% 
   filter(NoBusAccess == "Y" & POPSlabel != "No Pops of Concern") %>% 
   select(NAME, REP_DIST, SEN_DIST, TOWN, POPSlabel) %>% 
   ms_simplify(., keep = 0.1, keep_shapes = TRUE)
 
-ma_blkgrps_sf_Hwy <- ma_blkgrps_sf %>% 
+vt_blkgrps_sf_Hwy <- vt_blkgrps_sf %>% 
   filter(Headwaypctile >= 80 & POPSlabel != "No Pops of Concern") %>% 
   select(NAME, REP_DIST, SEN_DIST, TOWN, POPSlabel, 
          AvgStopHeadway, Headwaypctile)%>% 
   ms_simplify(., keep = 0.1, keep_shapes = TRUE)
 
-ma_blkgrps_sf_Walk <- ma_blkgrps_sf %>% 
+vt_blkgrps_sf_Walk <- vt_blkgrps_sf %>% 
   filter(NatWalkInd < 5.76 & POPSlabel != "No Pops of Concern") %>% 
   select(NAME, REP_DIST, SEN_DIST, TOWN, POPSlabel, NatWalkInd, Walkpctile, 
          WalkCat) %>% 
   ms_simplify(., keep = 0.1, keep_shapes = TRUE)
 
-ma_blkgrps_sf_Tcost <- ma_blkgrps_sf %>% 
+vt_blkgrps_sf_Tcost <- vt_blkgrps_sf %>% 
   filter(Tcostpctile >= 80 & POPSlabel != "No Pops of Concern") %>% 
   select(NAME, REP_DIST, SEN_DIST, TOWN, POPSlabel, hh7_t, Tcostpctile) %>% 
   ms_simplify(., keep = 0.1, keep_shapes = TRUE)
 
 # extract values for inline insertion
-H80th <- quantile(ma_blkgrps_sf$AvgStopHeadway, 0.8, na.rm = T)
-Tcost80th <- round(quantile(ma_blkgrps_sf$hh7_t, 0.8, na.rm = T),1)
+H80th <- quantile(vt_blkgrps_sf$AvgStopHeadway, 0.8, na.rm = T)
+Tcost80th <- round(quantile(vt_blkgrps_sf$hh7_t, 0.8, na.rm = T),1)
 
-# clean up "ma_blkgrps_sf$",
-rm(list = ls(pattern = paste("muni", "_80th", "headway80th", "_tract", "houseNoBus", "Transport", "houseWalk", "senateNoBus", "senateWalk", "lai_ma_blkgrp", "lai_ToverH", "_noTransit", "ma_blkgrps_sf_noBus", sep = "|"), ))
+# clean up "vt_blkgrps_sf$",
+rm(list = ls(pattern = paste("muni", "_80th", "headway80th", "_tract", "houseNoBus", "Transport", "houseWalk", "senateNoBus", "senateWalk", "lai_vt_blkgrp", "lai_ToverH", "_noTransit", "vt_blkgrps_sf_noBus", sep = "|"), ))
 ```
 
 The most important benefit of a transportation system is the access it provides to opportunity – economic, educational, health care, civic life, and simple freedom of movement.  Lack of adequate access to transportation hinders these opportunities. 
 
-Although Massachusetts hosts more modes of transit than any other state in New England, almost 1.8 million people  - over 25% of the population - have no access to any form of public transit. Over 50% of the state’s population do not live within reasonable walking distance of a bus stop. In western Massachusetts, moderate income households face transportation cost burdens that exceed the costs of housing.
+Although Vermont hosts more modes of transit than any other state in New England, almost 1.8 million people  - over 25% of the population - have no access to any form of public transit. Over 50% of the state’s population do not live within reasonable walking distance of a bus stop. In western Vermont, moderate income households face transportation cost burdens that exceed the costs of housing.
 
-These interactive figures identify communities across Massachusetts that are most underserved and most sensitive to the quality of four transportation metrics: access to public transit, transit headways, neighborhood walkability, and transportation cost burden.  
+These interactive figures identify communities across Vermont that are most underserved and most sensitive to the quality of four transportation metrics: access to public transit, transit headways, neighborhood walkability, and transportation cost burden.  
 
 <br>
 
@@ -426,45 +400,38 @@ These interactive figures identify communities across Massachusetts that are mos
 # # create color palette
 # palPM25 <- colorQuantile(
 #   palette = "YlOrRd",
-#   domain = ma_blkgrps_sf_PM25$PM25_19,
+#   domain = vt_blkgrps_sf_PM25$PM25_19,
 #   n = 5)
 
 # binpalPM25 <- colorBin(
 #   palette = "YlOrRd",
-#   domain = ma_blkgrps_sf_PM25$PM25_19,
+#   domain = vt_blkgrps_sf_PM25$PM25_19,
 #   bins = 5, pretty = FALSE
 # )
 
 # create simplified towns layer for faster mapping
 # download state outline
-ma_state <- states(cb = TRUE) %>% 
-  filter(NAME == "Massachusetts")
+vt_state <- states(cb = TRUE) %>% 
+  filter(NAME == "Vermont")
 # filter out extra polygons, clip out boundaries from water, simplify
-ma_towns_simple <- ma_towns %>% 
+vt_towns_simple <- vt_towns %>% 
   filter(NAME != "County subdivisions not defined") %>% 
-  ms_clip(., ma_state) %>% 
+  ms_clip(., vt_state) %>% 
   ms_simplify(., keep = 0.1, keep_shapes = TRUE)
 
-PopupEJ_NoBus <- paste0(EJbgs$NAME, "<br/>",
-                      "<b>Town:</b> ", EJbgs$TOWN, "<br/>",
-                  "<b>State House District:</b> ", EJbgs$REP_DIST, "<br/>",
-                  "<b>State Senate District:</b> ", EJbgs$SEN_DIST, "<br/>",
-                      "<b>Environmental Justice categories: </b>", EJbgs$EJlabel, "<br/>",
-                  "<b>Lack access to bus?:</b> ", EJbgs$NoBusAccess)
+PopupHouse <- paste0("Vermont state House District ", "<b>",house_districts$REP_DIST,"</b>", " has ", "<b>",house_districts$BGsNoBus,"</b>", " <b>Block Groups</b> with high percentages of priority populations and no reasonable access to a bus.")
 
-PopupHouse <- paste0("Massachusetts state House District ", "<b>",house_districts$REP_DIST,"</b>", " has ", "<b>",house_districts$BGsNoBus,"</b>", " <b>Block Groups</b> with high percentages of priority populations and no reasonable access to a bus.")
+PopupSenate <- paste0("Vermont state Senate District ", "<b>",senate_districts$SEN_DIST,"</b>", " has ", "<b>",senate_districts$BGsNoBus,"</b>", " <b>Block Groups</b> with high percentages of priority populations and no reasonable access to a bus.")
 
-PopupSenate <- paste0("Massachusetts state Senate District ", "<b>",senate_districts$SEN_DIST,"</b>", " has ", "<b>",senate_districts$BGsNoBus,"</b>", " <b>Block Groups</b> with high percentages of priority populations and no reasonable access to a bus.")
-
-Popup <- paste0(ma_blkgrps_sf_NoBus$NAME, "<br/>",
-                "<b>State House District:</b> ", ma_blkgrps_sf_NoBus$REP_DIST, "<br/>",
-                  "<b>State Senate District:</b> ", ma_blkgrps_sf_NoBus$SEN_DIST, "<br/>",
-                      "<b>Town:</b> ", ma_blkgrps_sf_NoBus$TOWN, "<br/>",
-                      "<b>Priority Populations: </b>", ma_blkgrps_sf_NoBus$POPSlabel)
+Popup <- paste0(vt_blkgrps_sf_NoBus$NAME, "<br/>",
+                "<b>State House District:</b> ", vt_blkgrps_sf_NoBus$REP_DIST, "<br/>",
+                  "<b>State Senate District:</b> ", vt_blkgrps_sf_NoBus$SEN_DIST, "<br/>",
+                      "<b>Town:</b> ", vt_blkgrps_sf_NoBus$TOWN, "<br/>",
+                      "<b>Priority Populations: </b>", vt_blkgrps_sf_NoBus$POPSlabel)
 
 leaflet(width = "100%") %>% 
   addProviderTiles(providers$Stamen.TonerLite) %>% 
-  addPolygons(data = ma_towns_simple,
+  addPolygons(data = vt_towns_simple,
               weight = 0.7,
               opacity = 1,
               color = "gray",
@@ -502,23 +469,7 @@ leaflet(width = "100%") %>%
                 fillOpacity = 0,
                 bringToFront = TRUE),
               group = "State Senate Districts") %>% 
-  addPolygons(data = EJbgs,
-              # fillColor = "red",
-              weight = 2,
-              opacity = 1,
-              color = "purple",
-              dashArray = 3,
-              fillOpacity = 0,
-              label=~TOWN,
-              popup = PopupEJ_NoBus,
-              highlight = highlightOptions(
-                weight = 5,
-                color = "#666",
-                dashArray = "",
-                fillOpacity = 0,
-                bringToFront = TRUE),
-              group = "Environmental Justice communities") %>% 
-  addPolygons(data = ma_blkgrps_sf_NoBus, 
+  addPolygons(data = vt_blkgrps_sf_NoBus, 
               color = "red",
               weight = 0.5,
               opacity = 0.7,
@@ -536,16 +487,16 @@ leaflet(width = "100%") %>%
   addLegend(colors = "red",
             labels = "No Bus Access for Priority Pops",
             position = "bottomleft") %>%
-  setView(lng = -71.7, 42.1, zoom = 8) %>% 
+  setView(lng = -72.7, 43.7, zoom = 7) %>% 
   # addMiniMap() %>% 
   addScaleBar(position = "bottomright") %>% 
   addSearchFeatures(targetGroups  = 'muni', 
                     options = searchFeaturesOptions(zoom=14, openPopup=TRUE, hideMarkerOnCollapse=T)) %>% 
   addLayersControl(
-    overlayGroups = c("Environmental Justice communities", "State House Districts","State Senate Districts"),
+    overlayGroups = c("State House Districts","State Senate Districts"),
     options = layersControlOptions(collapsed = TRUE)
   ) %>% 
-  hideGroup(c("Environmental Justice communities", "State House Districts","State Senate Districts"))
+  hideGroup(c("State House Districts","State Senate Districts"))
 ```
 
 <br>
@@ -556,55 +507,47 @@ leaflet(width = "100%") %>%
 ```{r mapHwy, fig.align="left", fig.cap="Map of Census block groups with the highest concentrations of one or more priority populations AND highest average bus headways in the state."}
 # # create simplified towns layer for faster mapping
 # # download state outline
-# ma_state <- states(cb = TRUE) %>% 
-#   filter(NAME == "Massachusetts")
+# vt_state <- states(cb = TRUE) %>% 
+#   filter(NAME == "Vermont")
 # # filter out extra polygons, clip out boundaries from water, simplify
-# ma_towns_simple <- ma_towns %>% 
+# vt_towns_simple <- vt_towns %>% 
 #   filter(NAME != "County subdivisions not defined") %>% 
-#   ms_clip(., ma_state) %>% 
+#   ms_clip(., vt_state) %>% 
 #   ms_simplify(., keep = 0.1, keep_shapes = TRUE)
 
 # create color palette
 palHwy <- colorQuantile(
   palette = "YlOrRd",
-  domain = ma_blkgrps_sf_Hwy$AvgStopHeadway,
+  domain = vt_blkgrps_sf_Hwy$AvgStopHeadway,
   n = 5)
 
 # binpalPM25 <- colorBin(
 #   palette = "YlOrRd",
-#   domain = ma_blkgrps_sf_PM25$PM25_19,
+#   domain = vt_blkgrps_sf_PM25$PM25_19,
 #   bins = 5, pretty = FALSE
 # )
 
-PopupEJ <- paste0(EJbgs$NAME, "<br/>",
-                      "<b>Town:</b> ", EJbgs$TOWN, "<br/>",
-                  "<b>State House District:</b> ", EJbgs$REP_DIST, "<br/>",
-                  "<b>State Senate District:</b> ", EJbgs$SEN_DIST, "<br/>",
-                      "<b>Environmental Justice categories: </b>", EJbgs$EJlabel, "<br/>",
-                  "<b>Avg Headway (minutes):</b> ", EJbgs$HeadwayLabel, "<br/>",
-                      "<b>Avg Headway percentile: </b>", EJbgs$HeadwayPctileLabel)
-
-PopupHouse <- paste0("Massachusetts state House District ", "<b>",house_districts$REP_DIST,"</b>", " has ", "<b>",house_districts$BGs80thHwy,"</b>", " <b>Block Groups</b> with high percentages of priority populations experiencing long bus headways at the 80th percentile (", H80th," minutes) or longer.", "<br/>",
+PopupHouse <- paste0("Vermont state House District ", "<b>",house_districts$REP_DIST,"</b>", " has ", "<b>",house_districts$BGs80thHwy,"</b>", " <b>Block Groups</b> with high percentages of priority populations experiencing long bus headways at the 80th percentile (", H80th," minutes) or longer.", "<br/>",
                      "<b>MIN (minutes):</b> ", house_districts$HeadwayLabel.min, "<br/>",
                      "<b>MEAN (minutes):</b> ", house_districts$HeadwayLabel.mean, "<br/>",
                      "<b>MAX (minutes):</b> ", house_districts$HeadwayLabel.max)
 
-PopupSenate <- paste0("Massachusetts state Senate District ", "<b>",senate_districts$SEN_DIST,"</b>", " has ", "<b>",senate_districts$BGs80thHwy,"</b>", " <b>Block Groups</b> with high percentages of priority populations experiencing long bus headways at the 80th percentile (", H80th," minutes) or longer.", "<br/>",
+PopupSenate <- paste0("Vermont state Senate District ", "<b>",senate_districts$SEN_DIST,"</b>", " has ", "<b>",senate_districts$BGs80thHwy,"</b>", " <b>Block Groups</b> with high percentages of priority populations experiencing long bus headways at the 80th percentile (", H80th," minutes) or longer.", "<br/>",
                      "<b>MIN (minutes):</b> ", senate_districts$HeadwayLabel.min, "<br/>",
                      "<b>MEAN (minutes):</b> ", senate_districts$HeadwayLabel.mean, "<br/>",
                      "<b>MAX (minutes):</b> ", senate_districts$HeadwayLabel.max)
 
-Popup <- paste0(ma_blkgrps_sf_Hwy$NAME, "<br/>",
-                "<b>State House District:</b> ", ma_blkgrps_sf_Hwy$REP_DIST, "<br/>",
-                  "<b>State Senate District:</b> ", ma_blkgrps_sf_Hwy$SEN_DIST, "<br/>",
-                      "<b>Town:</b> ", ma_blkgrps_sf_Hwy$TOWN, "<br/>",
-                      "<b>Avg Bus Headway (minutes):</b> ", round(ma_blkgrps_sf_Hwy$AvgStopHeadway,1), "<br/>",
-         "<b>Headway percentile:</b> ", round(ma_blkgrps_sf_Hwy$Headwaypctile,0), "<br/>",
-                      "<b>Priority Populations: </b>", ma_blkgrps_sf_Hwy$POPSlabel)
+Popup <- paste0(vt_blkgrps_sf_Hwy$NAME, "<br/>",
+                "<b>State House District:</b> ", vt_blkgrps_sf_Hwy$REP_DIST, "<br/>",
+                  "<b>State Senate District:</b> ", vt_blkgrps_sf_Hwy$SEN_DIST, "<br/>",
+                      "<b>Town:</b> ", vt_blkgrps_sf_Hwy$TOWN, "<br/>",
+                      "<b>Avg Bus Headway (minutes):</b> ", round(vt_blkgrps_sf_Hwy$AvgStopHeadway,1), "<br/>",
+         "<b>Headway percentile:</b> ", round(vt_blkgrps_sf_Hwy$Headwaypctile,0), "<br/>",
+                      "<b>Priority Populations: </b>", vt_blkgrps_sf_Hwy$POPSlabel)
 
 leaflet(width = "100%") %>% 
   addProviderTiles(providers$Stamen.TonerLite) %>% 
-  addPolygons(data = ma_towns_simple,
+  addPolygons(data = vt_towns_simple,
               weight = 0.7,
               opacity = 1,
               color = "gray",
@@ -642,23 +585,7 @@ leaflet(width = "100%") %>%
                 fillOpacity = 0,
                 bringToFront = TRUE),
               group = "State Senate Districts") %>% 
-  addPolygons(data = EJbgs,
-              # fillColor = "red",
-              weight = 2,
-              opacity = 1,
-              color = "purple",
-              dashArray = 3,
-              fillOpacity = 0,
-              label=~TOWN,
-              popup = PopupEJ,
-              highlight = highlightOptions(
-                weight = 5,
-                color = "#666",
-                dashArray = "",
-                fillOpacity = 0,
-                bringToFront = TRUE),
-              group = "Environmental Justice communities") %>% 
-  addPolygons(data = ma_blkgrps_sf_Hwy, 
+  addPolygons(data = vt_blkgrps_sf_Hwy, 
               color = ~palHwy(AvgStopHeadway),
               weight = 0.5,
               opacity = 0.7,
@@ -675,7 +602,7 @@ leaflet(width = "100%") %>%
                 bringToFront = TRUE)) %>% 
   addLegend(title = "Highest Avg Headways (minutes)<br>for Priority Populations", 
             pal = palHwy,
-            values = ma_blkgrps_sf_Hwy$AvgStopHeadway,
+            values = vt_blkgrps_sf_Hwy$AvgStopHeadway,
             position = "bottomleft",
             labFormat = function(type, cuts, p) {
               n = length(cuts)
@@ -685,16 +612,16 @@ leaflet(width = "100%") %>%
                             formatC(cuts[-1], big.mark = ",", digits = 1, 
                                     format = "f"))
               }) %>% 
-  setView(lng = -71.7, 42.1, zoom = 8) %>% 
+  setView(lng = -72.7, 43.7, zoom = 7) %>% 
   # addMiniMap() %>% 
   addScaleBar(position = "bottomright") %>% 
   addSearchFeatures(targetGroups  = 'muni', 
                     options = searchFeaturesOptions(zoom=14, openPopup=TRUE, hideMarkerOnCollapse=T)) %>% 
   addLayersControl(
-    overlayGroups = c("Environmental Justice communities", "State House Districts","State Senate Districts"),
+    overlayGroups = c("State House Districts","State Senate Districts"),
     options = layersControlOptions(collapsed = TRUE)
   ) %>% 
-  hideGroup(c("Environmental Justice communities", "State House Districts","State Senate Districts"))
+  hideGroup(c("State House Districts","State Senate Districts"))
 ```
 
 <br>
@@ -706,25 +633,17 @@ leaflet(width = "100%") %>%
 # create color palette
 palWalk <- colorQuantile(
   palette = "YlOrRd",
-  domain = ma_blkgrps_sf_Walk$NatWalkInd,
+  domain = vt_blkgrps_sf_Walk$NatWalkInd,
   n = 5,
   reverse = TRUE)
 
 # binpalPM25 <- colorBin(
 #   palette = "YlOrRd",
-#   domain = ma_blkgrps_sf_PM25$PM25_19,
+#   domain = vt_blkgrps_sf_PM25$PM25_19,
 #   bins = 5, pretty = FALSE
 # )
 
-PopupEJ <- paste0(EJbgs$NAME, "<br/>",
-                      "<b>Town:</b> ", EJbgs$TOWN, "<br/>",
-                  "<b>State House District:</b> ", EJbgs$REP_DIST, "<br/>",
-                  "<b>State Senate District:</b> ", EJbgs$SEN_DIST, "<br/>",
-                      "<b>Environmental Justice categories: </b>", EJbgs$EJlabel, "<br/>",
-                  "<b>Walkability Score:</b> ", paste0(round(EJbgs$NatWalkInd,1), " (", EJbgs$WalkCat),")", "<br/>",
-                      "<b>Walkability percentile: </b>", round(EJbgs$Walkpctile,0))
-
-PopupHouse <- paste0("Massachusetts state House District ",
+PopupHouse <- paste0("Vermont state House District ",
                      "<b>",house_districts$REP_DIST,"</b>", " has ",
                      "<b>",house_districts$BGsLWalk,"</b>",
                      " <b>Block Groups</b> with high percentages of priority populations in least walkable neighborhoods.", "<br/>",
@@ -732,22 +651,22 @@ PopupHouse <- paste0("Massachusetts state House District ",
                      "<b>MEAN Walkability:</b> ", paste0(round(house_districts$NatWalkInd.mean,1), " (", house_districts$WalkCat.mean),")", "<br/>",
                      "<b>MAX Walkability:</b> ", paste0(round(house_districts$NatWalkInd.max,1), " (", house_districts$WalkCat.max),")")
 
-PopupSenate <- paste0("Massachusetts state Senate District ", "<b>",senate_districts$SEN_DIST,"</b>", " has ", "<b>",senate_districts$BGsLWalk,"</b>", " <b>Block Groups</b> with high percentages of priority populations in least walkable neighborhoods.", "<br/>",
+PopupSenate <- paste0("Vermont state Senate District ", "<b>",senate_districts$SEN_DIST,"</b>", " has ", "<b>",senate_districts$BGsLWalk,"</b>", " <b>Block Groups</b> with high percentages of priority populations in least walkable neighborhoods.", "<br/>",
                      "<b>MIN Walkability:</b> ", paste0(round(senate_districts$NatWalkInd.min,1), " (", senate_districts$WalkCat.min),")", "<br/>",
                      "<b>MEAN Walkability:</b> ", paste0(round(senate_districts$NatWalkInd.mean,1), " (", senate_districts$WalkCat.mean),")", "<br/>",
                      "<b>MAX Walkability:</b> ", paste0(round(senate_districts$NatWalkInd.max,1), " (", senate_districts$WalkCat.max),")")
 
-Popup <- paste0(ma_blkgrps_sf_Walk$NAME, "<br/>",
-                "<b>State House District:</b> ", ma_blkgrps_sf_Walk$REP_DIST, "<br/>",
-                  "<b>State Senate District:</b> ", ma_blkgrps_sf_Walk$SEN_DIST, "<br/>",
-                      "<b>Town:</b> ", ma_blkgrps_sf_Walk$TOWN, "<br/>",
-                      "<b>Walkability Score:</b> ", paste0(round(ma_blkgrps_sf_Walk$NatWalkInd,1), " (", ma_blkgrps_sf_Walk$WalkCat,")"), "<br/>",
-         "<b>Walkability percentile:</b> ", round(ma_blkgrps_sf_Walk$Walkpctile,0), "<br/>",
-                      "<b>Priority Populations: </b>", ma_blkgrps_sf_Walk$POPSlabel)
+Popup <- paste0(vt_blkgrps_sf_Walk$NAME, "<br/>",
+                "<b>State House District:</b> ", vt_blkgrps_sf_Walk$REP_DIST, "<br/>",
+                  "<b>State Senate District:</b> ", vt_blkgrps_sf_Walk$SEN_DIST, "<br/>",
+                      "<b>Town:</b> ", vt_blkgrps_sf_Walk$TOWN, "<br/>",
+                      "<b>Walkability Score:</b> ", paste0(round(vt_blkgrps_sf_Walk$NatWalkInd,1), " (", vt_blkgrps_sf_Walk$WalkCat,")"), "<br/>",
+         "<b>Walkability percentile:</b> ", round(vt_blkgrps_sf_Walk$Walkpctile,0), "<br/>",
+                      "<b>Priority Populations: </b>", vt_blkgrps_sf_Walk$POPSlabel)
 
 leaflet(width = "100%") %>% 
   addProviderTiles(providers$Stamen.TonerLite) %>% 
-  addPolygons(data = ma_towns_simple,
+  addPolygons(data = vt_towns_simple,
               weight = 0.7,
               opacity = 1,
               color = "gray",
@@ -785,23 +704,7 @@ leaflet(width = "100%") %>%
                 fillOpacity = 0,
                 bringToFront = TRUE),
               group = "State Senate Districts") %>% 
-  addPolygons(data = EJbgs,
-              # fillColor = "red",
-              weight = 2,
-              opacity = 1,
-              color = "purple",
-              dashArray = 3,
-              fillOpacity = 0,
-              label=~TOWN,
-              popup = PopupEJ,
-              highlight = highlightOptions(
-                weight = 5,
-                color = "#666",
-                dashArray = "",
-                fillOpacity = 0,
-                bringToFront = TRUE),
-              group = "Environmental Justice communities") %>% 
-  addPolygons(data = ma_blkgrps_sf_Walk, 
+  addPolygons(data = vt_blkgrps_sf_Walk, 
               color = ~palWalk(NatWalkInd),
               weight = 0.5,
               opacity = 0.7,
@@ -818,7 +721,7 @@ leaflet(width = "100%") %>%
                 bringToFront = TRUE)) %>% 
   addLegend(title = "Least Walkable Scores<br>for Priority Populations", 
             pal = palWalk,
-            values = ma_blkgrps_sf_Walk$NatWalkInd,
+            values = vt_blkgrps_sf_Walk$NatWalkInd,
             position = "bottomleft",
             labFormat = function(type, cuts, p) {
               n = length(cuts)
@@ -828,16 +731,16 @@ leaflet(width = "100%") %>%
                             formatC(cuts[-1], big.mark = ",", digits = 1, 
                                     format = "f"))
               }) %>% 
-  setView(lng = -71.7, 42.1, zoom = 8) %>% 
+  setView(lng = -72.7, 43.7, zoom = 7) %>% 
   # addMiniMap() %>% 
   addScaleBar(position = "bottomright") %>% 
   addSearchFeatures(targetGroups  = 'muni', 
                     options = searchFeaturesOptions(zoom=14, openPopup=TRUE, hideMarkerOnCollapse=T)) %>% 
   addLayersControl(
-    overlayGroups = c("Environmental Justice communities", "State House Districts","State Senate Districts"),
+    overlayGroups = c("State House Districts","State Senate Districts"),
     options = layersControlOptions(collapsed = TRUE)
   ) %>% 
-  hideGroup(c("Environmental Justice communities", "State House Districts","State Senate Districts"))
+  hideGroup(c("State House Districts","State Senate Districts"))
 ```
 
 <br>
@@ -849,44 +752,36 @@ leaflet(width = "100%") %>%
 # create color palette
 palTcost <- colorQuantile(
   palette = "YlOrRd",
-  domain = ma_blkgrps_sf_Tcost$hh7_t,
+  domain = vt_blkgrps_sf_Tcost$hh7_t,
   n = 5)
 
 # binpalPM25 <- colorBin(
 #   palette = "YlOrRd",
-#   domain = ma_blkgrps_sf_PM25$PM25_19,
+#   domain = vt_blkgrps_sf_PM25$PM25_19,
 #   bins = 5, pretty = FALSE
 # )
 
-PopupEJ <- paste0(EJbgs$NAME, "<br/>",
-                      "<b>Town:</b> ", EJbgs$TOWN, "<br/>",
-                  "<b>State House District:</b> ", EJbgs$REP_DIST, "<br/>",
-                  "<b>State Senate District:</b> ", EJbgs$SEN_DIST, "<br/>",
-                      "<b>Environmental Justice categories: </b>", EJbgs$EJlabel, "<br/>",
-                  "<b>Avg Transport Cost Burden:</b> ", round(EJbgs$hh7_t,1),"% of household income", "<br/>",
-                      "<b>Avg Transport Cost Burden percentile: </b>", round(EJbgs$Tcostpctile,1))
-
-PopupHouse <- paste0("Massachusetts state House District ", "<b>",house_districts$REP_DIST,"</b>", " has ", "<b>",house_districts$BGs80thTcost,"</b>", " <b>Block Groups</b> with high percentages of priority populations experiencing transportation cost burdens at the 80th percentile - ", Tcost80th,"% of household income - or higher.", "<br/>",
+PopupHouse <- paste0("Vermont state House District ", "<b>",house_districts$REP_DIST,"</b>", " has ", "<b>",house_districts$BGs80thTcost,"</b>", " <b>Block Groups</b> with high percentages of priority populations experiencing transportation cost burdens at the 80th percentile - ", Tcost80th,"% of household income - or higher.", "<br/>",
                      "<b>MIN:</b> ", round(house_districts$hh7_t.min,1),"%", "<br/>",
                      "<b>MEAN:</b> ", round(house_districts$hh7_t.mean,1),"%", "<br/>",
                      "<b>MAX:</b> ", round(house_districts$hh7_t.max,1),"%")
 
-PopupSenate <- paste0("Massachusetts state Senate District ", "<b>",senate_districts$SEN_DIST,"</b>", " has ", "<b>",senate_districts$BGs80thTcost,"</b>", " <b>Block Groups</b> with high percentages of priority populations experiencing transportation cost burdens at the 80th percentile - ", Tcost80th,"% of household income - or higher.", "<br/>",
+PopupSenate <- paste0("Vermont state Senate District ", "<b>",senate_districts$SEN_DIST,"</b>", " has ", "<b>",senate_districts$BGs80thTcost,"</b>", " <b>Block Groups</b> with high percentages of priority populations experiencing transportation cost burdens at the 80th percentile - ", Tcost80th,"% of household income - or higher.", "<br/>",
                      "<b>MIN:</b> ", round(senate_districts$hh7_t.min,1),"%", "<br/>",
                      "<b>MEAN:</b> ", round(senate_districts$hh7_t.mean,1),"%", "<br/>",
                      "<b>MAX:</b> ", round(senate_districts$hh7_t.max,1),"%")
 
-Popup <- paste0(ma_blkgrps_sf_Tcost$NAME, "<br/>",
-                "<b>State House District:</b> ", ma_blkgrps_sf_Tcost$REP_DIST, "<br/>",
-                  "<b>State Senate District:</b> ", ma_blkgrps_sf_Tcost$SEN_DIST, "<br/>",
-                      "<b>Town:</b> ", ma_blkgrps_sf_Tcost$TOWN, "<br/>",
-                      "<b>Avg Transport Cost Burden:</b> ", round(ma_blkgrps_sf_Tcost$hh7_t,1), "% of household income", "<br/>",
-                      "<b>Avg Transport Cost Burden percentile: </b>", round(ma_blkgrps_sf_Tcost$Tcostpctile,1), "<br/>",
-                      "<b>Priority Populations: </b>", ma_blkgrps_sf_Tcost$POPSlabel)
+Popup <- paste0(vt_blkgrps_sf_Tcost$NAME, "<br/>",
+                "<b>State House District:</b> ", vt_blkgrps_sf_Tcost$REP_DIST, "<br/>",
+                  "<b>State Senate District:</b> ", vt_blkgrps_sf_Tcost$SEN_DIST, "<br/>",
+                      "<b>Town:</b> ", vt_blkgrps_sf_Tcost$TOWN, "<br/>",
+                      "<b>Avg Transport Cost Burden:</b> ", round(vt_blkgrps_sf_Tcost$hh7_t,1), "% of household income", "<br/>",
+                      "<b>Avg Transport Cost Burden percentile: </b>", round(vt_blkgrps_sf_Tcost$Tcostpctile,1), "<br/>",
+                      "<b>Priority Populations: </b>", vt_blkgrps_sf_Tcost$POPSlabel)
 
 leaflet(width = "100%") %>% 
   addProviderTiles(providers$Stamen.TonerLite) %>% 
-  addPolygons(data = ma_towns_simple,
+  addPolygons(data = vt_towns_simple,
               weight = 0.7,
               opacity = 1,
               color = "gray",
@@ -924,23 +819,7 @@ leaflet(width = "100%") %>%
                 fillOpacity = 0,
                 bringToFront = TRUE),
               group = "State Senate Districts") %>% 
-  addPolygons(data = EJbgs,
-              # fillColor = "red",
-              weight = 2,
-              opacity = 1,
-              color = "purple",
-              dashArray = 3,
-              fillOpacity = 0,
-              label=~TOWN,
-              popup = PopupEJ,
-              highlight = highlightOptions(
-                weight = 5,
-                color = "#666",
-                dashArray = "",
-                fillOpacity = 0,
-                bringToFront = TRUE),
-              group = "Environmental Justice communities") %>% 
-  addPolygons(data = ma_blkgrps_sf_Tcost, 
+  addPolygons(data = vt_blkgrps_sf_Tcost, 
               color = ~palTcost(hh7_t),
               weight = 0.5,
               opacity = 0.7,
@@ -957,7 +836,7 @@ leaflet(width = "100%") %>%
                 bringToFront = TRUE)) %>% 
   addLegend(title = "Highest Transport Cost Burdens<br>(% Household Income)<br>for Priority Populations", 
             pal = palTcost,
-            values = ma_blkgrps_sf_Tcost$hh7_t,
+            values = vt_blkgrps_sf_Tcost$hh7_t,
             position = "bottomleft",
             labFormat = function(type, cuts, p) {
               n = length(cuts)
@@ -967,16 +846,16 @@ leaflet(width = "100%") %>%
                             formatC(cuts[-1], big.mark = ",", digits = 1, 
                                     format = "f"))
               }) %>% 
-  setView(lng = -71.7, 42.1, zoom = 8) %>% 
+  setView(lng = -72.7, 43.7, zoom = 7) %>% 
   # addMiniMap() %>% 
   addScaleBar(position = "bottomright") %>% 
   addSearchFeatures(targetGroups  = 'muni', 
                     options = searchFeaturesOptions(zoom=14, openPopup=TRUE, hideMarkerOnCollapse=T)) %>% 
   addLayersControl(
-    overlayGroups = c("Environmental Justice communities", "State House Districts","State Senate Districts"),
+    overlayGroups = c("State House Districts","State Senate Districts"),
     options = layersControlOptions(collapsed = TRUE)
   ) %>% 
-  hideGroup(c("Environmental Justice communities", "State House Districts","State Senate Districts"))
+  hideGroup(c("State House Districts","State Senate Districts"))
 ```
 
 <br>
@@ -1019,14 +898,14 @@ Metrics of transportation access and adequacy:
 
 ### Bus Access
 
-```{r graphBusAccess, fig.align="center", fig.cap="Percentage of population groups within 1/4 mile (400 meters) of a bus stop across Massachusetts."}
-ma_transitAccessPops_df %>% 
+```{r graphBusAccess, fig.align="center", fig.cap="Percentage of population groups within 1/4 mile (400 meters) of a bus stop across Vermont."}
+vt_transitAccessPops_df %>% 
   arrange(PctBus) %>% 
   mutate(PctBus = round(PctBus,1), 
          Status = case_when(
            Group == "Total Pop" ~ "State avg",
-           PctBus < ma_transitAccessPops_df[1,7] ~ "Below state avg",
-           PctBus > ma_transitAccessPops_df[1,7] ~ "Above state avg"),
+           PctBus < vt_transitAccessPops_df[1,7] ~ "Below state avg",
+           PctBus > vt_transitAccessPops_df[1,7] ~ "Above state avg"),
          Group = recode(Group, "Minority" = "People of Color",
                         "No HS Dip" = "No HS Diploma")) %>% 
   mutate(Group = factor(Group) %>% fct_reorder(PctBus, .desc = FALSE)) %>% 
@@ -1039,7 +918,7 @@ ma_transitAccessPops_df %>%
            labels = list(format = "{value}%")) %>% 
   hc_xAxis(title = NULL, type = "category", labels = list(step = 1)) %>% 
   hc_tooltip(pointFormat = "{series.name}: {point.y}%") %>% 
-  hc_title(text = "Massachusetts Populations within Walking Distance (400m) of Bus Stops", 
+  hc_title(text = "Vermont Populations within Walking Distance (400m) of Bus Stops", 
            useHTML = TRUE)
 ```
 
@@ -1049,14 +928,14 @@ ma_transitAccessPops_df %>%
 
 ### Headways
 
-```{r graphHwy, fig.align="center", fig.cap="Population-weighted average bus headways for groups within 400 meters of a bus stop across Massachusetts."}
+```{r graphHwy, fig.align="center", fig.cap="Population-weighted average bus headways for groups within 400 meters of a bus stop across Vermont."}
 # extract total pop value
-popAvgHwy <- ma_busHeadwayPops_df %>% 
+popAvgHwy <- vt_busHeadwayPops_df %>% 
   filter(Group == "Total Pop") %>% 
   select(AvgWHeadway) %>% 
   pull()
 
-ma_busHeadwayPops_df %>% 
+vt_busHeadwayPops_df %>% 
   as.data.frame() %>% 
   arrange(desc(AvgWHeadway)) %>% 
   mutate(AvgWHeadway = round(AvgWHeadway,1),
@@ -1075,7 +954,7 @@ ma_busHeadwayPops_df %>%
   hc_yAxis(title = list(text = "Minutes between bus arrivals")) %>% 
   hc_xAxis(title = NULL, type = "category", labels = list(step = 1)) %>% 
   hc_tooltip(pointFormat = "{series.name}: {point.y} minutes") %>% 
-  hc_title(text = "Population−Weighted Average Bus Stop Headway for Massachusetts Groups within Walking Distance (400m) of Bus Stops", 
+  hc_title(text = "Population−Weighted Average Bus Stop Headway for Vermont Groups within Walking Distance (400m) of Bus Stops", 
            useHTML = TRUE)
 ```
 
@@ -1085,13 +964,13 @@ ma_busHeadwayPops_df %>%
 
 ### Walkability
 
-```{r graphWalk, fig.align="center", fig.cap="Population-weighted average walkability index scores for groups across Massachusetts."}
-popAvgWalk <- ma_wAvgWalkability_df %>% 
+```{r graphWalk, fig.align="center", fig.cap="Population-weighted average walkability index scores for groups across Vermont."}
+popAvgWalk <- vt_wAvgWalkability_df %>% 
   filter(Group == "Total Pop") %>% 
   select(wNatWalkIndex) %>% 
   pull()
 
-ma_wAvgWalkability_df %>% 
+vt_wAvgWalkability_df %>% 
   arrange(wNatWalkIndex) %>% 
   mutate(wNatWalkIndex = round(wNatWalkIndex,1), 
          Status = case_when(
@@ -1119,14 +998,14 @@ ma_wAvgWalkability_df %>%
 
 ### Cost Burden
 
-```{r graphTcost, fig.align="center", fig.cap="Population-weighted average transportation cost burden as a percentage of household income for groups across Massachusetts."}
+```{r graphTcost, fig.align="center", fig.cap="Population-weighted average transportation cost burden as a percentage of household income for groups across Vermont."}
 # extract total pop value
-popAvgTcost <- lai_ma_df %>% 
+popAvgTcost <- lai_vt_df %>% 
   filter(Group == "Total Pop") %>% 
   select(wTBurden) %>% 
   pull()
 
-lai_ma_df %>% 
+lai_vt_df %>% 
   as.data.frame() %>% 
   arrange(desc(wTBurden)) %>% 
   mutate(wTBurden = round(wTBurden,2),
@@ -1166,7 +1045,7 @@ These graphs show population-weighted access and burden by group for the followi
 
 * Transportation Cost Burden: Transportation is the second-largest expenditure category for American households, approximately 16% of annual expenditures on average between 2015 and 2018.  Only housing costs (~32%) exceed those of transportation. Transportation costs can be significant economic burdens for moderate and lower income households. For many working-class and rural households, transportation costs exceed housing costs. Transportation cost burden is the percentage of household income for a moderate income household that would be needed to cover transportation costs. These estimated costs are derived from the [Location Affordability Index Model Version 3 (LAIM3)](https://www.hudexchange.info/programs/location-affordability-index/about/) developed by the U.S. Department of Housing and Urban Development (HUD) and Department of Transportation. 
 
-For example, adults over the age of 64 (i.e., 'Over 64') in the state reside in Census block groups that experience population-weighted average bus headways of over `r round(ma_busHeadwayPops_df %>% filter(Group == "Over 64") %>% select(AvgWHeadway) %>% pull(),1)` minutes. Compare this to the state average (i.e., `Total Pop`) of `r round(ma_busHeadwayPops_df %>% filter(Group == "Over 64") %>% select(AvgWHeadway) %>% pull(),1)` minutes on average between buses for those with access to bus stops. 
+For example, adults over the age of 64 (i.e., 'Over 64') in the state reside in Census block groups that experience population-weighted average bus headways of over `r round(vt_busHeadwayPops_df %>% filter(Group == "Over 64") %>% select(AvgWHeadway) %>% pull(),1)` minutes. Compare this to the state average (i.e., `Total Pop`) of `r round(vt_busHeadwayPops_df %>% filter(Group == "Over 64") %>% select(AvgWHeadway) %>% pull(),1)` minutes on average between buses for those with access to bus stops. 
 
 <br>
 
@@ -1178,9 +1057,9 @@ For example, adults over the age of 64 (i.e., 'Over 64') in the state reside in 
 
 ```{r townTable, fig.align="center"}
 # calculate bus access pops per municipality
-busAccesbyTown <- ma_busBuff400m_sf %>% 
+busAccesbyTown <- vt_busBuff400m_sf %>% 
   transmute(NewPop = NewPop, OldArea = as.numeric(st_area(.))) %>% 
-  st_intersection(st_transform(ma_towns, st_crs(ma_busBuff400m_sf))) %>% 
+  st_intersection(st_transform(vt_towns, st_crs(vt_busBuff400m_sf))) %>% 
   mutate(NewArea = as.numeric(st_area(.)),
          Proportion = NewArea/OldArea,
          BusPop = as.integer(NewPop*Proportion)) %>% 
@@ -1191,22 +1070,22 @@ busAccesbyTown <- ma_busBuff400m_sf %>%
 # download town pops
 town_pops <- get_acs(geography = "county subdivision", survey = "acs5",
                      variables = c(totalpop = "B03002_001"),
-                     state = "MA", output = "wide", year = 2018) %>% 
+                     state = "VT", output = "wide", year = 2018) %>% 
   select(GEOID, totalpopE)
 
 # grab municipal boundaries
-ma_towns_sf <- county_subdivisions(state = "MA", cb = TRUE) %>% 
+vt_towns_sf <- county_subdivisions(state = "VT", cb = TRUE) %>% 
   st_transform(., crs = 26986)
 
 # create df with town names from tigris and pops from tidycensus
-town_busAccess_pct <- ma_towns_sf %>% 
+town_busAccess_pct <- vt_towns_sf %>% 
   as.data.frame() %>% 
   left_join(., town_pops, by = "GEOID") %>% 
   select(NAME, totalpopE) %>% 
   left_join(busAccesbyTown, ., by = "NAME") %>% 
   mutate(PctBusAccess = BusPop/totalpopE*100)
 
-ma_towns %>% 
+vt_towns %>% 
   as.data.frame() %>% 
   filter(NAME != "County subdivisions not defined") %>% 
   left_join(., town_busAccess_pct, by = "NAME") %>% 
@@ -1229,11 +1108,11 @@ ma_towns %>%
 
 ```{r houseTable, fig.align="center"}
 # calculate bus access pops per district
-busAccesbyHouse <- ma_busBuff400m_sf %>% 
+busAccesbyHouse <- vt_busBuff400m_sf %>% 
   transmute(NewPop = NewPop, OldArea = as.numeric(st_area(.))) %>% 
   st_intersection(
     st_make_valid(
-    st_transform(house_districts,st_crs(ma_busBuff400m_sf))
+    st_transform(house_districts,st_crs(vt_busBuff400m_sf))
     )
     ) %>% 
   mutate(NewArea = as.numeric(st_area(.)),
@@ -1244,13 +1123,13 @@ busAccesbyHouse <- ma_busBuff400m_sf %>%
   summarize(BusPop = sum(BusPop))
 
 # create pop totals for each district
-house_names_pops <- ma_blkgrps_sf %>% 
-  st_transform(.,st_crs(ma_busBuff400m_sf)) %>% 
+house_names_pops <- vt_blkgrps_sf %>% 
+  st_transform(.,st_crs(vt_busBuff400m_sf)) %>% 
   select(totalpopE) %>% 
   mutate(OldArea = as.numeric(st_area(.))) %>% 
     st_intersection(
       st_make_valid(
-        st_transform(house_districts,st_crs(ma_busBuff400m_sf))
+        st_transform(house_districts,st_crs(vt_busBuff400m_sf))
         )
       ) %>% 
   mutate(NewArea = as.numeric(st_area(.)),
@@ -1286,11 +1165,11 @@ house_districts %>%
 
 ```{r senateTable, fig.align="center"}
 # calculate bus access pops per district
-busAccesbySenate <- ma_busBuff400m_sf %>% 
+busAccesbySenate <- vt_busBuff400m_sf %>% 
   transmute(NewPop = NewPop, OldArea = as.numeric(st_area(.))) %>% 
   st_intersection(
     st_make_valid(
-    st_transform(senate_districts,st_crs(ma_busBuff400m_sf))
+    st_transform(senate_districts,st_crs(vt_busBuff400m_sf))
     )
     ) %>% 
   mutate(NewArea = as.numeric(st_area(.)),
@@ -1301,13 +1180,13 @@ busAccesbySenate <- ma_busBuff400m_sf %>%
   summarize(BusPop = sum(BusPop))
 
 # create pop totals for each district
-senate_names_pops <- ma_blkgrps_sf %>% 
-  st_transform(.,st_crs(ma_busBuff400m_sf)) %>% 
+senate_names_pops <- vt_blkgrps_sf %>% 
+  st_transform(.,st_crs(vt_busBuff400m_sf)) %>% 
   select(totalpopE) %>% 
   mutate(OldArea = as.numeric(st_area(.))) %>% 
     st_intersection(
       st_make_valid(
-        st_transform(senate_districts,st_crs(ma_busBuff400m_sf))
+        st_transform(senate_districts,st_crs(vt_busBuff400m_sf))
         )
       ) %>% 
   mutate(NewArea = as.numeric(st_area(.)),
