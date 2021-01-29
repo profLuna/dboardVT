@@ -43,12 +43,12 @@ vt_blkgrps_sf <- readRDS(file = "../DATA/vt_blkgrps_sf_CUM.Rds")
 #create layer of municipalities
 vt_towns <- county_subdivisions("VT") %>% 
   st_transform(., crs = 4326) %>% 
-  select(NAME,NAMELSAD)
+  select(GEOID,NAME,NAMELSAD)
 
 # Assign municipality names to block groups
 vt_blkgrps_sf <- county_subdivisions("VT") %>% 
   st_transform(., crs = st_crs(vt_blkgrps_sf)) %>% 
-  transmute(TOWN = NAME) %>% 
+  transmute(TOWN = NAMELSAD, GEOIDTN = GEOID) %>% 
   st_join(vt_blkgrps_sf, ., largest = TRUE) %>% 
   mutate(NAME = str_remove_all(NAME, ", Vermont")) %>% 
   st_transform(., crs = 4326)
@@ -136,17 +136,33 @@ vt_blkgrps_sf <- vt_blkgrps_sf %>%
   # filter(POPSlabel != "No Pops of Concern")
 
 # create summary stats of transport values by municipality
+# muniTransport <- vt_blkgrps_sf %>%
+#   as.data.frame() %>% 
+#   select(TOWN, AvgStopHeadway, NatWalkInd, hh7_t) %>% 
+#   group_by(TOWN) %>% 
+#   summarize(across(.cols = everything(), 
+#                    list(min = min, mean = mean, max = max),
+#                    na.rm = TRUE,
+#                    .names = "{.col}.{.fn}")) %>% 
+#   mutate(across(ends_with("mean"), 
+#                 ~percent_rank(.x)*100,
+#                 .names = "pctrank_{.col}"))
+
 muniTransport <- vt_blkgrps_sf %>%
+  select(AvgStopHeadway, NatWalkInd, hh7_t) %>% 
+  mutate(OldArea = as.numeric(st_area(.))) %>% 
+  st_intersection(vt_towns) %>% 
+  mutate(NewArea = as.numeric(st_area(.)),
+         Prop = NewArea/OldArea) %>% 
   as.data.frame() %>% 
-  select(TOWN, AvgStopHeadway, NatWalkInd, hh7_t) %>% 
-  group_by(TOWN) %>% 
-  summarize(across(.cols = everything(), 
-                   list(min = min, mean = mean, max = max),
-                   na.rm = TRUE,
-                   .names = "{.col}.{.fn}")) %>% 
+  group_by(NAMELSAD) %>% 
+  summarize(across(.cols = c(AvgStopHeadway, NatWalkInd, hh7_t), 
+                   ~weighted.mean(.x, w = Prop, na.rm = TRUE),
+                   .names = "{.col}.mean")) %>% 
   mutate(across(ends_with("mean"), 
                 ~percent_rank(.x)*100,
-                .names = "pctrank_{.col}"))
+                .names = "pctrank_{.col}")) %>% 
+  rename(TOWN = NAMELSAD)
 
 # create summary of transport values by house district
 houseTransport <- vt_blkgrps_sf %>%
@@ -253,11 +269,11 @@ senateTcost_80th <- vt_blkgrps_sf %>%
 
 # join stats to jurisdiction layers
 vt_towns <- vt_towns %>% 
-  left_join(., muniTransport, by = c("NAME" = "TOWN")) %>% 
-  left_join(., muniNoBus, by = c("NAME" = "TOWN")) %>% 
-  left_join(., muniHwy_80th, by = c("NAME" = "TOWN")) %>% 
-  left_join(., muniWalk, by = c("NAME" = "TOWN")) %>% 
-  left_join(., muniTcost_80th, by = c("NAME" = "TOWN")) %>%
+  left_join(., muniTransport, by = c("NAMELSAD" = "TOWN")) %>% 
+  left_join(., muniNoBus, by = c("NAMELSAD" = "TOWN")) %>% 
+  left_join(., muniHwy_80th, by = c("NAMELSAD" = "TOWN")) %>% 
+  left_join(., muniWalk, by = c("NAMELSAD" = "TOWN")) %>% 
+  left_join(., muniTcost_80th, by = c("NAMELSAD" = "TOWN")) %>%
   replace_na(list(BGsNoBus = 0, BGs80thHwy = 0, BGsLWalk = 0, 
                   BGs80thTcost = 0)) %>% 
   ms_simplify(., keep = 0.1, keep_shapes = TRUE)
@@ -515,17 +531,29 @@ leaflet(width = "100%") %>%
 #   ms_clip(., vt_state) %>% 
 #   ms_simplify(., keep = 0.1, keep_shapes = TRUE)
 
-# create color palette
-palHwy <- colorQuantile(
-  palette = "YlOrRd",
-  domain = vt_blkgrps_sf_Hwy$AvgStopHeadway,
-  n = 5)
-
-# binpalPM25 <- colorBin(
+# # create color palette
+# palHwy <- colorQuantile(
 #   palette = "YlOrRd",
-#   domain = vt_blkgrps_sf_PM25$PM25_19,
-#   bins = 5, pretty = FALSE
-# )
+#   domain = vt_blkgrps_sf_Hwy$AvgStopHeadway,
+#   n = 5, 
+#   right = TRUE)
+
+# workaround to deal with "Error in cut.default(x, binsToUse, labels = FALSE, include.lowest = TRUE, : 'breaks' are not unique"
+quantileNum <- 5
+
+probs <- seq(0, 1, length.out = quantileNum + 1)
+bins <- quantile(vt_blkgrps_sf_Hwy$AvgStopHeadway,
+                 probs, na.rm = TRUE, names = FALSE)
+
+while (length(unique(bins)) != length(bins)) {
+ quantileNum <- quantileNum - 1
+ probs <- seq(0, 1, length.out = quantileNum + 1)
+ bins <- quantile(vt_blkgrps_sf_Hwy$AvgStopHeadway, probs,
+                  na.rm = TRUE, names = FALSE)
+}
+
+palHwy <- colorBin("YlOrRd", bins = bins)
+
 
 PopupHouse <- paste0("Vermont state House District ", "<b>",house_districts$REP_DIST,"</b>", " has ", "<b>",house_districts$BGs80thHwy,"</b>", " <b>Block Groups</b> with high percentages of priority populations experiencing long bus headways at the 80th percentile (", H80th," minutes) or longer.", "<br/>",
                      "<b>MIN (minutes):</b> ", house_districts$HeadwayLabel.min, "<br/>",
@@ -600,18 +628,22 @@ leaflet(width = "100%") %>%
                 dashArray = "",
                 fillOpacity = 0.7,
                 bringToFront = TRUE)) %>% 
-  addLegend(title = "Highest Avg Headways (minutes)<br>for Priority Populations", 
+  addLegend(title = "Highest Avg Headways (minutes)<br>for Priority Populations",
             pal = palHwy,
             values = vt_blkgrps_sf_Hwy$AvgStopHeadway,
-            position = "bottomleft",
-            labFormat = function(type, cuts, p) {
-              n = length(cuts)
-              p = paste0(round(p * 100), '%')
-              cuts = paste0(formatC(cuts[-n], big.mark = ",", digits = 1, 
-                                    format = "f"), " - ", 
-                            formatC(cuts[-1], big.mark = ",", digits = 1, 
-                                    format = "f"))
-              }) %>% 
+            position = "bottomleft") %>%
+  # addLegend(title = "Highest Avg Headways (minutes)<br>for Priority Populations",
+  #           pal = palHwy,
+  #           values = vt_blkgrps_sf_Hwy$AvgStopHeadway,
+  #           position = "bottomleft",
+  #           labFormat = function(type, cuts, p) {
+  #             n = length(cuts)
+  #             p = paste0(round(p * 100), '%')
+  #             cuts = paste0(formatC(cuts[-n], big.mark = ",", digits = 1,
+  #                                   format = "f"), " - ",
+  #                           formatC(cuts[-1], big.mark = ",", digits = 1,
+  #                                   format = "f"))
+  #             }) %>%
   setView(lng = -72.7, 43.7, zoom = 7) %>% 
   # addMiniMap() %>% 
   addScaleBar(position = "bottomright") %>% 
@@ -904,8 +936,8 @@ vt_transitAccessPops_df %>%
   mutate(PctBus = round(PctBus,1), 
          Status = case_when(
            Group == "Total Pop" ~ "State avg",
-           PctBus < vt_transitAccessPops_df[1,7] ~ "Below state avg",
-           PctBus > vt_transitAccessPops_df[1,7] ~ "Above state avg"),
+           PctBus < vt_transitAccessPops_df[1,6] ~ "Below state avg",
+           PctBus > vt_transitAccessPops_df[1,6] ~ "Above state avg"),
          Group = recode(Group, "Minority" = "People of Color",
                         "No HS Dip" = "No HS Diploma")) %>% 
   mutate(Group = factor(Group) %>% fct_reorder(PctBus, .desc = FALSE)) %>% 
@@ -1063,8 +1095,8 @@ busAccesbyTown <- vt_busBuff400m_sf %>%
   mutate(NewArea = as.numeric(st_area(.)),
          Proportion = NewArea/OldArea,
          BusPop = as.integer(NewPop*Proportion)) %>% 
-  as.data.frame() %>% 
-  group_by(NAME) %>% 
+  st_drop_geometry() %>% 
+  group_by(GEOID) %>% 
   summarize(BusPop = sum(BusPop))
 
 # download town pops
@@ -1073,23 +1105,23 @@ town_pops <- get_acs(geography = "county subdivision", survey = "acs5",
                      state = "VT", output = "wide", year = 2018) %>% 
   select(GEOID, totalpopE)
 
-# grab municipal boundaries
-vt_towns_sf <- county_subdivisions(state = "VT", cb = TRUE) %>% 
-  st_transform(., crs = 26986)
+# # grab municipal boundaries
+# vt_towns_sf <- county_subdivisions(state = "VT", cb = TRUE) %>% 
+#   st_transform(., crs = 26986)
 
 # create df with town names from tigris and pops from tidycensus
-town_busAccess_pct <- vt_towns_sf %>% 
-  as.data.frame() %>% 
-  left_join(., town_pops, by = "GEOID") %>% 
-  select(NAME, totalpopE) %>% 
-  left_join(busAccesbyTown, ., by = "NAME") %>% 
+town_busAccess_pct <- town_pops %>% 
+  # as.data.frame() %>% 
+  # left_join(., town_pops, by = "GEOID") %>% 
+  # select(NAME, totalpopE) %>% 
+  left_join(busAccesbyTown, ., by = "GEOID") %>% 
   mutate(PctBusAccess = BusPop/totalpopE*100)
 
 vt_towns %>% 
   as.data.frame() %>% 
   filter(NAME != "County subdivisions not defined") %>% 
-  left_join(., town_busAccess_pct, by = "NAME") %>% 
-  transmute(`City/Town` = NAME,
+  left_join(., town_busAccess_pct, by = "GEOID") %>% 
+  transmute(`City/Town` = NAMELSAD,
             `Pct Bus Access` = PctBusAccess/100,
             `Avg Headway (minutes)` = AvgStopHeadway.mean,
             `Avg Walkability` = NatWalkInd.mean,
