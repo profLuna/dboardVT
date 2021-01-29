@@ -769,7 +769,7 @@ LST24hrPop %>%
          pointWidth = 15) %>% 
   hc_yAxis(title = list(text = "Population-weighted mean temperature (°F)"),
            labels = list(format = "{value}°"), 
-           floor = 72, ceiling = 85) %>% 
+           floor = 69, ceiling = 73) %>% 
   hc_xAxis(title = NULL, type = "category", labels = list(step = 1)) %>% 
   hc_tooltip(pointFormat = "{series.name}: {point.y}°") %>% 
   hc_title(text = "Population−Weighted Mean Day−Night Average Land Surface Temperature (°F) Exposure", useHTML = TRUE)
@@ -827,7 +827,7 @@ LSTNightPop %>%
          pointWidth = 15) %>% 
   hc_yAxis(title = list(text = "Population-weighted mean temperature (°F)"),
            labels = list(format = "{value}°"), 
-           floor = 63, ceiling = 68) %>% 
+           floor = 58, ceiling = 62) %>% 
   hc_xAxis(title = NULL, type = "category", labels = list(step = 1)) %>% 
   hc_tooltip(pointFormat = "{series.name}: {point.y}°") %>% 
   hc_title(text = "Population−Weighted Mean Nighttime Average Land Surface Temperature (°F) Exposure", useHTML = TRUE)
