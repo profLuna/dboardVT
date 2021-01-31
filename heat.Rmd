@@ -354,7 +354,7 @@ rm(list = ls(pattern = paste("muni", "_80th", "houseN", "senateN", "houseL", "se
 
 Heat is the leading cause of weather-related death in the U.S. Warmer air temperatures can also exacerbate air pollution, especially ground-level ozone. As the climate warms, heat presents both a direct and indirect threat to health and quality of life. 
 
-Almost 1.23 million people in Vermont live in areas with the highest day and nighttime temperatures, primarily in the eastern half of the state and the Springfield-Holyoke area. Limited English speaking households and people of color are disproportionately exposed to the highest daytime and nighttime temperatures.
+Population centers experience the highest daytime temperatures. This is especially the case in the western and northwestern parts of Vermont. Nighttime temperatures are highest along the shore of Lake Champlain as well as in and near Bennington and Brattleboro. Limited English speaking households and people of color are more likely to experience the highest daytime and nighttime temperatures.
 
 These interactive figures identify communities across Vermont that are most overburdened and most vulnerable to three measures of ambient temperature: Day-Night average land surface temperatures (LST), the Urban Heat Island effect, and elevated nighttime LST.
 
