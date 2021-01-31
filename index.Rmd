@@ -439,6 +439,7 @@ sketch1 = htmltools::withTags(table(
 
 read_csv("../tables/VT_burdens_town.csv") %>% 
   mutate(across(starts_with("Pct"), ~./100)) %>% # let DT do formatting
+  mutate(across(starts_with("Pct"), ~if_else(. > 1, 1, .))) %>% 
   datatable(., rownames = FALSE, options = list(pageLength = 10), 
             container = sketch1) %>% 
   formatRound(., columns = c(2,4,6), digits = 0, mark = ",") %>% 
