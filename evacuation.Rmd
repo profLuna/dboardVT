@@ -28,14 +28,14 @@ library(tidycensus)
 load("../DATA/ne_layers.rds")
 
 # isolate MA census geography and relevant variables
-ma_blkgrps_sf <- ne_blkgrp_sf %>% 
-  filter(STATE == "Massachusetts") %>% 
-  select(GEOID, NAME, STATE, bg_area_m2, totalpopE, minorityE, minority_pctE, under5E, pct_under5E, under18E, pct_under18E, over64E, pct_over64E, householdsE, eng_hhE, eng_limitE, eng_limit_pctE, age25upE, lthsE, pct_lthsE, povknownE, num2povE, pct2povE, MA_MINORITY, MA_INCOME, MA_ENGLISH) %>%
+vt_blkgrps_sf <- ne_blkgrp_sf %>% 
+  filter(STATE == "Vermont") %>% 
+  select(GEOID, NAME, STATE, bg_area_m2, totalpopE, minorityE, minority_pctE, under5E, pct_under5E, under18E, pct_under18E, over64E, pct_over64E, householdsE, eng_hhE, eng_limitE, eng_limit_pctE, age25upE, lthsE, pct_lthsE, povknownE, num2povE, pct2povE) %>%
   st_transform(., crs = 4326) %>% 
   filter(!st_is_empty(.)) 
 
-ma_tracts_sf <- ne_tracts_sf %>% 
-  filter(STATE == "Massachusetts") %>% 
+vt_tracts_sf <- ne_tracts_sf %>% 
+  filter(STATE == "Vermont") %>% 
   select(GEOID, NAME, totalpopE, STATE, Over18E, disabledOver18E, 
          pct_disabilityOver18E, totalHHE, HHnoCarE, pct_HHnoCarE) %>% 
   st_transform(., crs = 4326) %>% 
@@ -45,18 +45,155 @@ ma_tracts_sf <- ne_tracts_sf %>%
 # rm(list = ls(pattern = "ne_"))
 
 # Read in evacuation risk data. Developed parts of census units; need to filter and join.
-load("../DATA/FEMA/MA/nfhza_census.Rds")
-load("../DATA/FEMA/MA/hevac_census.Rds")
+load("../DATA/FEMA/VT/nfhza_census.Rds")
 
-# join NFHZA flood hazard and hurricane evac records where percentage of pop of concern in flood or hurricane evac prone areas is 80th percentile
-ma_blkgrps_sf <- ma_blkgrps_nfhza %>% 
+# join total flood records where percentage of pop of concern in flood or river corridor prone areas is 80th percentile
+vt_blkgrps_sf <- vt_blkgrps_flood %>% 
   as.data.frame() %>% 
   mutate(NewEngHH = Proportion*eng_hhE,
+         NewAge25Up = Proportion*age25upE) %>%
+  group_by(GEOID) %>% 
+  summarize(across(NewPop:NewAge25Up, ~ sum(.x, na.rm = T), 
+                     .names = "sum_{.col}")) %>% 
+  filter(percent_rank(sum_NewMinority/sum_NewPop) >= 0.8 | 
+           percent_rank(sum_NewUnder5/sum_NewPop) >= 0.8 |
+           percent_rank(sum_NewOver64/sum_NewPop) >= 0.8 |
+           percent_rank(sum_NewUnder18/sum_NewPop) >= 0.8 |
+           percent_rank(sum_NewEng_limit/sum_NewEngHH) >= 0.8 |
+           percent_rank(sum_NewPov/sum_NewPop) >= 0.8 |
+           percent_rank(sum_NewLths/sum_NewAge25Up) >= 0.8) %>% 
+  transmute(GEOID = GEOID, floodRisk = "F") %>% 
+  left_join(vt_blkgrps_sf,., by="GEOID")
+
+
+# Re-process FEMA and RC only affected block groups
+library(parallel)
+##### calculate areas at risk from FEMA flood zones and River Corridors separately for map labeling #####
+# load cropped flood zones
+vt_nfhza_2852_land <- readRDS("../DATA/FEMA/VT/vt_nfhza_2852_land.Rds") %>% 
+  mutate(Area = as.numeric(Area))
+
+# read in river corridors layer. downloaded from VT Open Geodata Portal (https://geodata.vermont.gov/datasets/VTANR::river-corridors-august-2019) in December 2020. 
+rc <- st_read(dsn = "../DATA/FEMA/VT/WaterHydro_RiverCorridors",
+              layer = "WaterHydro_RiverCorridors_poly") %>% 
+  st_transform(., crs = 2852) %>% 
+  st_make_valid()
+
+# read in developed block group polygons
+vt_blkgrps_developed <- st_read(dsn = "../DATA/FEMA/VT",
+                                layer = "vt_blkgrps_developed") %>% 
+  st_transform(., crs = 2852) %>%
+  st_make_valid()
+
+# calculate populations within flood risk areas
+# USE PARALLEL PROCESSING
+# determine number of cores to use for parallel processing
+n.cores <- detectCores()-1
+
+# create parallel cluster nodes
+clust <- makeCluster(n.cores)
+
+# use ClusterEvalQ to load needed packages in each cluster
+clusterEvalQ(clust, {
+  library(tidyverse)
+  library(sf)
+  library(tmaptools)
+})
+
+# export variables to each node for use in processing
+clusterExport(clust, varlist = c("vt_nfhza_2852_land", "vt_blkgrps_developed"))
+
+# break up data by county for faster processing
+# download counties layer
+vt_counties <- counties(state = "VT", cb = TRUE) %>% 
+  st_transform(.,crs=2852)
+
+# break up counties into a list to run with parLapply
+county_list <- list()
+for (i in 1:(nrow(vt_counties))){
+  county_list[[i]] <- vt_counties[i,]
+}
+
+# run in parallel
+vt_blkgrps_nfhza_list <- parLapply(clust, county_list, function(x){
+  crop_shape(vt_nfhza_2852_land, x, polygon = T) %>% 
+    st_intersection(vt_blkgrps_developed, .) %>% 
+    mutate(NewArea = as.numeric(st_area(.)))
+} )
+
+stopCluster(clust)
+
+# bring it all together
+vt_blkgrps_nfhza <- do.call(rbind, vt_blkgrps_nfhza_list) %>% 
+  st_make_valid()
+
+# allocate populations to intersected areas
+vt_blkgrps_nfhza <- vt_blkgrps_nfhza %>% 
+  left_join(., st_drop_geometry(vt_blkgrps_sf), by = "GEOID") %>% 
+  filter(!st_is_empty(.)) %>% 
+  mutate(Proportion = as.numeric(NewArea/OldArea),
+         NewPop = totalpopE*Proportion,
+         NewMinority = minorityE*Proportion,
+         NewUnder5 = under5E*Proportion,
+         NewOver64 = over64E*Proportion,
+         NewUnder18 = under18E*Proportion,
+         NewEng_limit = eng_limitE*Proportion,
+         NewPov = num2povE*Proportion,
+         NewLths = lthsE*Proportion)
+
+
+# repeat for river corridors
+# create parallel cluster nodes
+clust <- makeCluster(n.cores)
+
+# use ClusterEvalQ to load needed packages in each cluster
+clusterEvalQ(clust, {
+  library(tidyverse)
+  library(sf)
+  library(tmaptools)
+})
+
+# export variables to each node for use in processing
+clusterExport(clust, varlist = c("rc", "vt_blkgrps_developed"))
+
+# run in parallel
+vt_blkgrps_rc_list <- parLapply(clust, county_list, function(x){
+  crop_shape(rc, x, polygon = T) %>% 
+    st_intersection(vt_blkgrps_developed, .) %>% 
+    mutate(NewArea = as.numeric(st_area(.)))
+} )
+
+stopCluster(clust)
+
+# bring it all together
+vt_blkgrps_rc <- do.call(rbind, vt_blkgrps_rc_list) %>% 
+  st_make_valid()
+
+# allocate populations to intersected areas
+vt_blkgrps_rc <- vt_blkgrps_rc %>% 
+  left_join(., st_drop_geometry(vt_blkgrps_sf), by = "GEOID") %>% 
+  filter(!st_is_empty(.)) %>% 
+  mutate(Proportion = as.numeric(NewArea/OldArea),
+         NewPop = totalpopE*Proportion,
+         NewMinority = minorityE*Proportion,
+         NewUnder5 = under5E*Proportion,
+         NewOver64 = over64E*Proportion,
+         NewUnder18 = under18E*Proportion,
+         NewEng_limit = eng_limitE*Proportion,
+         NewPov = num2povE*Proportion,
+         NewLths = lthsE*Proportion)
+#########
+
+# Add labels to identify NFHZA prone areas separately from river corridors
+vt_blkgrps_sf <- vt_blkgrps_nfhza %>% 
+  as.data.frame() %>% 
+  mutate(Proportion = NewArea/OldArea,
+         NewEngHH = Proportion*eng_hhE,
          NewAge25Up = Proportion*age25upE,
          floodtype = if_else(FLD_ZONE == "X", "500-year", "100-year")) %>%
   group_by(GEOID) %>% 
   summarize(across(NewPop:NewAge25Up, ~ sum(.x, na.rm = T), 
-                     .names = "sum_{.col}"),
+                   .names = "sum_{.col}"),
             floodtypes = paste(unique(floodtype), collapse = ", ")) %>% 
   filter(percent_rank(sum_NewMinority/sum_NewPop) >= 0.8 | 
            percent_rank(sum_NewUnder5/sum_NewPop) >= 0.8 |
@@ -64,75 +201,74 @@ ma_blkgrps_sf <- ma_blkgrps_nfhza %>%
            percent_rank(sum_NewUnder18/sum_NewPop) >= 0.8 |
            percent_rank(sum_NewEng_limit/sum_NewEngHH) >= 0.8 |
            percent_rank(sum_NewPov/sum_NewPop) >= 0.8 |
-           percent_rank(sum_NewLths/sum_NewAge25Up) >= 0.8 |
-           percent_rank(sum_NewMA_LOWINC/sum_NewPop) >= 0.8 |
-           percent_rank(sum_NewMA_MINORITY/sum_NewPop) >= 0.8 |
-           percent_rank(sum_NewMA_NOENGLISH/sum_NewPop) >= 0.8) %>% 
+           percent_rank(sum_NewLths/sum_NewAge25Up) >= 0.8) %>% 
   transmute(GEOID = GEOID, nfhzaRisk = "F", floodtypes = floodtypes) %>% 
-  left_join(ma_blkgrps_sf,., by="GEOID")
+  left_join(vt_blkgrps_sf,., by="GEOID")
 
-ma_blkgrps_sf <- ma_blkgrps_hevac %>% 
+# Add labels to identify river corridor risk areas separately from FEMA
+vt_blkgrps_sf <- vt_blkgrps_rc %>% 
   as.data.frame() %>% 
-  mutate(NewEngHH = Proportion*eng_hhE,
-         NewAge25Up = Proportion*age25upE) %>% 
+  mutate(Proportion = NewArea/OldArea,
+         NewEngHH = Proportion*eng_hhE,
+         NewAge25Up = Proportion*age25upE,
+         floodtype = " River Corridor") %>%
   group_by(GEOID) %>% 
   summarize(across(NewPop:NewAge25Up, ~ sum(.x, na.rm = T), 
-                   .names = "sum_{.col}")) %>% 
+                   .names = "sum_{.col}"),
+            floodtype = unique(floodtype)) %>% 
   filter(percent_rank(sum_NewMinority/sum_NewPop) >= 0.8 | 
            percent_rank(sum_NewUnder5/sum_NewPop) >= 0.8 |
            percent_rank(sum_NewOver64/sum_NewPop) >= 0.8 |
            percent_rank(sum_NewUnder18/sum_NewPop) >= 0.8 |
            percent_rank(sum_NewEng_limit/sum_NewEngHH) >= 0.8 |
            percent_rank(sum_NewPov/sum_NewPop) >= 0.8 |
-           percent_rank(sum_NewLths/sum_NewAge25Up) >= 0.8 |
-           percent_rank(sum_NewMA_LOWINC/sum_NewPop) >= 0.8 |
-           percent_rank(sum_NewMA_MINORITY/sum_NewPop) >= 0.8 |
-           percent_rank(sum_NewMA_NOENGLISH/sum_NewPop) >= 0.8) %>% 
-  transmute(GEOID = GEOID, hevacRisk = "H") %>% 
-  left_join(ma_blkgrps_sf,., by="GEOID")
+           percent_rank(sum_NewLths/sum_NewAge25Up) >= 0.8) %>% 
+  transmute(GEOID = GEOID, rcRisk = "RC", floodtype = floodtype) %>% 
+  left_join(vt_blkgrps_sf,., by="GEOID")
 
 
 #create layer of municipalities
-ma_towns <- county_subdivisions("MA") %>% 
+vt_towns <- county_subdivisions("VT") %>% 
   filter(NAME != "County subdivisions not defined") %>%  
   st_transform(., crs = 4326) %>% 
-  select(NAME,NAMELSAD)
+  select(GEOID, NAME, NAMELSAD)
 
 # Assign municipality names to block groups
-ma_blkgrps_sf <- county_subdivisions("MA") %>% 
-  st_transform(., crs = st_crs(ma_blkgrps_sf)) %>% 
-  transmute(TOWN = NAME) %>% 
-  st_join(ma_blkgrps_sf, ., largest = TRUE) %>% 
-  mutate(NAME = str_remove_all(NAME, ", Massachusetts")) %>% 
+vt_blkgrps_sf <- county_subdivisions("VT") %>% 
+  st_transform(., crs = st_crs(vt_blkgrps_sf)) %>% 
+  transmute(TOWN = NAMELSAD) %>% 
+  st_join(vt_blkgrps_sf, ., largest = TRUE) %>% 
+  mutate(NAME = str_remove_all(NAME, ", Vermont")) %>% 
   st_transform(., crs = 4326)
 
 # create layer of state house districts
-house_districts <- st_read("../DATA/shapefiles/house2012",
-                            "HOUSE2012_POLY") %>% 
-  select(REP_DIST) %>% 
+house_districts <- st_read(
+  "../DATA/shapefiles/VT_Data_-_Vermont_House_Districts_2012-shp",
+  "VT_Data_-_Vermont_House_Districts_2012") %>% 
+  transmute(REP_DIST = NAME) %>% 
   st_transform(., crs = 4326) %>% 
   st_make_valid()
 
 # create layer of state senate districts
-senate_districts <- st_read("../DATA/shapefiles/senate2012",
-                            "SENATE2012_POLY") %>% 
-  select(SEN_DIST) %>% 
+senate_districts <- st_read("../DATA/shapefiles/VT_Senate_Districts_2012-shp",
+                            "VT_Senate_Districts_2012") %>% 
+  transmute(SEN_DIST = NAME) %>% 
   st_transform(., crs = 4326) %>% 
   st_make_valid()
 
 # Assign state house district names to block groups
-ma_blkgrps_sf <- house_districts %>% 
+vt_blkgrps_sf <- house_districts %>% 
   select(REP_DIST) %>% 
-  st_join(ma_blkgrps_sf, ., largest = TRUE)
+  st_join(vt_blkgrps_sf, ., largest = TRUE)
 
 # Assign state senate district names to block groups
-ma_blkgrps_sf <- senate_districts %>% 
+vt_blkgrps_sf <- senate_districts %>% 
   select(SEN_DIST) %>% 
-  st_join(ma_blkgrps_sf, ., largest = TRUE)
+  st_join(vt_blkgrps_sf, ., largest = TRUE)
 
 
 # Create labeling variables to identify pops of a concern in a given block group that contributed to cumulative burden score
-ma_blkgrps_sf <- ma_blkgrps_sf %>% 
+vt_blkgrps_sf <- vt_blkgrps_sf %>% 
   mutate(Minority80th = if_else(percent_rank(minority_pctE) >= 0.8, "People of Color","NA"),
     Under5_80th = if_else(percent_rank(pct_under5E) >= 0.8, "Under 5", "NA"),
     Under18_80th = if_else(percent_rank(pct_under18E) >= 0.8, "Under 18", "NA"),
@@ -140,9 +276,6 @@ ma_blkgrps_sf <- ma_blkgrps_sf %>%
     lths80th = if_else(percent_rank(pct_lthsE) >= 0.8, "No HS Diploma", "NA"),
     pct2pov80th = if_else(percent_rank(pct2povE) >= 0.8, "Low Income", "NA"),
     eng_limit_pct80th = if_else(percent_rank(eng_limit_pctE) >= 0.8, "Limited English HH", "NA"),
-    MA_INCOME_80th = if_else(MA_INCOME == "I", "MA Low Income", "NA"),
-    MA_MINORITY_80th = if_else(MA_MINORITY == "M", "MA Minority", "NA"),
-    MA_ENGLISH_80th = if_else(MA_ENGLISH == "E", "MA Limited English HH", "NA"),
     POPSlabel = gsub("^,*|(?<=,),|,*$", "", # get rid of extra commas
     str_remove_all( # get rid of NAs
       paste(Minority80th,
@@ -151,10 +284,7 @@ ma_blkgrps_sf <- ma_blkgrps_sf %>%
             Over64_80th,
             lths80th,
             pct2pov80th,
-            eng_limit_pct80th,
-            MA_INCOME_80th,
-            MA_MINORITY_80th,
-            MA_ENGLISH_80th, sep = ","),
+            eng_limit_pct80th, sep = ","),
       pattern = "NA"), 
     perl=T
     ),
@@ -162,86 +292,50 @@ ma_blkgrps_sf <- ma_blkgrps_sf %>%
     )
   # filter(POPSlabel != "No Pops of Concern")
 
-# create layer of EJ polygons
-EJbgs <- ma_blkgrps_sf %>% 
-  filter(MA_INCOME == "I" | MA_MINORITY == "M" | MA_ENGLISH == "E") %>% 
-  mutate(EJlabel = gsub("^,*|(?<=,),|,*$", "", # get rid of extra commas
-    str_remove_all( # get rid of NAs
-      paste(MA_INCOME_80th,
-            MA_MINORITY_80th,
-            MA_ENGLISH_80th, sep = ","),
-      pattern = "NA"), 
-    perl=T
-    )) %>% 
-  select(NAME, TOWN, REP_DIST, SEN_DIST, EJlabel, nfhzaRisk, floodtypes, 
-         hevacRisk) %>% 
-  mutate(nfhzaRisk = if_else(is.na(nfhzaRisk), "No", "Yes"),
-         hevacRisk = if_else(is.na(hevacRisk), "No", "Yes")) %>% 
-  ms_simplify(., keep = 0.1, keep_shapes = TRUE)
-
 
 # Calculate Pop and Pct pop at risk by jurisdiction
-NFHZAbyTown <- ma_blkgrps_nfhza %>% 
+NFHZAbyTown <- vt_blkgrps_flood %>% 
   transmute(NewPop = NewPop, OldArea = as.numeric(st_area(.))) %>% 
-  st_intersection(st_transform(ma_towns, st_crs(ma_blkgrps_nfhza))) %>% 
+  st_intersection(st_transform(vt_towns, st_crs(vt_blkgrps_flood))) %>% 
   mutate(NewArea = as.numeric(st_area(.)),
          Proportion = NewArea/OldArea,
          nfhzaPop = as.integer(NewPop*Proportion)) %>% 
   as.data.frame() %>% 
-  group_by(NAME) %>% 
+  group_by(NAMELSAD) %>% 
   summarize(nfhzaPop = sum(nfhzaPop))
 
 # download town pops from tidycensus
 town_pops <- get_acs(geography = "county subdivision", survey = "acs5",
                      variables = c(totalpop = "B03002_001"),
-                     state = "MA", output = "wide", year = 2018) %>% 
+                     state = "VT", output = "wide", year = 2018) %>% 
   select(GEOID, totalpopE)
 
-# grab municipal boundaries from TIGRIS
-ma_towns_sf <- county_subdivisions(state = "MA", cb = TRUE) %>% 
-  st_transform(., crs = 26986)
+# # grab municipal boundaries from TIGRIS
+# vt_towns_sf <- county_subdivisions(state = "VT", cb = TRUE) %>% 
+#   st_transform(., crs = 26986)
 
 # create df with town names from tigris and pops from tidycensus
-town_nfhzaPop_pct <- ma_towns_sf %>% 
+town_nfhzaPop_pct <- vt_towns %>% 
   as.data.frame() %>% 
   left_join(., town_pops, by = "GEOID") %>% 
-  select(NAME, totalpopE) %>% 
-  left_join(., NFHZAbyTown,by = "NAME") %>% 
+  select(NAMELSAD, totalpopE) %>% 
+  left_join(., NFHZAbyTown,by = "NAMELSAD") %>% 
   replace_na(list(nfhzaPop = 0)) %>% 
-  mutate(PctPopNFHZA = nfhzaPop/totalpopE*100)
-
-
-# repeat for hurricanes
-# Calculate Pop and Pct pop at risk by jurisdiction
-HEVACbyTown <- ma_blkgrps_hevac %>% 
-  transmute(NewPop = NewPop, OldArea = as.numeric(st_area(.))) %>% 
-  st_intersection(st_transform(ma_towns, st_crs(ma_blkgrps_hevac))) %>% 
-  mutate(NewArea = as.numeric(st_area(.)),
-         Proportion = NewArea/OldArea,
-         hevacPop = as.integer(NewPop*Proportion)) %>% 
-  as.data.frame() %>% 
-  group_by(NAME) %>% 
-  summarize(hevacPop = sum(hevacPop))
-
-# calc pct at risk from HEVAC and join with FEMA numbers
-town_floodPop_pct <- town_nfhzaPop_pct %>% 
-  left_join(., HEVACbyTown, by = "NAME") %>% 
-  replace_na(list(hevacPop = 0)) %>% 
-  mutate(PctPopHEVAC = hevacPop/totalpopE*100)
+  mutate(PctPopNFHZA = if_else(totalpopE == 0, 0, nfhzaPop/totalpopE*100))
 
 
 # calculate flood pops by house district
 # create pop totals for each district
 house_names_pops <- get_acs(geography = "block group", survey = "acs5",
-                     variables = c(totalpop = "B03002_001"), state = "MA", 
+                     variables = c(totalpop = "B03002_001"), state = "VT", 
                      output = "wide", year = 2018, geometry = TRUE) %>% 
   select(GEOID, totalpopE) %>% 
-  st_transform(.,st_crs(ma_blkgrps_nfhza)) %>% 
+  st_transform(.,st_crs(vt_blkgrps_flood)) %>% 
   select(totalpopE) %>% 
   mutate(OldArea = as.numeric(st_area(.))) %>% 
     st_intersection(
       st_make_valid(
-        st_transform(house_districts,st_crs(ma_blkgrps_nfhza))
+        st_transform(house_districts,st_crs(vt_blkgrps_flood))
         )
       ) %>% 
   mutate(NewArea = as.numeric(st_area(.)),
@@ -252,11 +346,11 @@ house_names_pops <- get_acs(geography = "block group", survey = "acs5",
   summarize(totalpopE = sum(NewPop))
 
 # identify FEMA risk pops by district and calculate pop pct
-NFHZAbyHouse <- ma_blkgrps_nfhza %>% 
+NFHZAbyHouse <- vt_blkgrps_flood %>% 
   transmute(NewPop = NewPop, OldArea = as.numeric(st_area(.))) %>% 
   st_intersection(
     st_make_valid(
-      st_transform(house_districts, st_crs(ma_blkgrps_nfhza))
+      st_transform(house_districts, st_crs(vt_blkgrps_flood))
       )
     ) %>% 
   mutate(NewArea = as.numeric(st_area(.)),
@@ -268,40 +362,20 @@ NFHZAbyHouse <- ma_blkgrps_nfhza %>%
   left_join(house_names_pops, ., by = "REP_DIST") %>% 
   replace_na(list(nfhzaPop = 0)) %>% 
   mutate(PctPopNFHZA = nfhzaPop/totalpopE*100)
-
-# identify HEVAC risk pops by district and calculate pop pct, and bring together with FEMA
-house_floodPop_pct <- ma_blkgrps_hevac %>% 
-  transmute(NewPop = NewPop, OldArea = as.numeric(st_area(.))) %>% 
-  st_intersection(
-    st_make_valid(
-      st_transform(house_districts, st_crs(ma_blkgrps_hevac))
-      )
-    ) %>% 
-  mutate(NewArea = as.numeric(st_area(.)),
-         Proportion = NewArea/OldArea,
-         hevacPop = as.integer(NewPop*Proportion)) %>% 
-  as.data.frame() %>% 
-  group_by(REP_DIST) %>% 
-  summarize(hevacPop = sum(hevacPop)) %>% 
-  left_join(house_names_pops, ., by = "REP_DIST") %>% 
-  replace_na(list(hevacPop = 0)) %>% 
-  mutate(PctPopHEVAC = hevacPop/totalpopE*100) %>% 
-  left_join(NFHZAbyHouse, ., by = "REP_DIST") %>% 
-  select(-starts_with("totalpopE"))
 
 
 # calculate flood pops by senate district
 # create pop totals for each district
 senate_names_pops <- get_acs(geography = "block group", survey = "acs5",
-                     variables = c(totalpop = "B03002_001"), state = "MA", 
+                     variables = c(totalpop = "B03002_001"), state = "VT", 
                      output = "wide", year = 2018, geometry = TRUE) %>% 
   select(GEOID, totalpopE) %>% 
-  st_transform(.,st_crs(ma_blkgrps_nfhza)) %>% 
+  st_transform(.,st_crs(vt_blkgrps_flood)) %>% 
   select(totalpopE) %>% 
   mutate(OldArea = as.numeric(st_area(.))) %>% 
     st_intersection(
       st_make_valid(
-        st_transform(senate_districts,st_crs(ma_blkgrps_nfhza))
+        st_transform(senate_districts,st_crs(vt_blkgrps_flood))
         )
       ) %>% 
   mutate(NewArea = as.numeric(st_area(.)),
@@ -312,11 +386,11 @@ senate_names_pops <- get_acs(geography = "block group", survey = "acs5",
   summarize(totalpopE = sum(NewPop))
 
 # identify FEMA risk pops by district and calculate pop pct
-NFHZAbySenate <- ma_blkgrps_nfhza %>% 
+NFHZAbySenate <- vt_blkgrps_flood %>% 
   transmute(NewPop = NewPop, OldArea = as.numeric(st_area(.))) %>% 
   st_intersection(
     st_make_valid(
-      st_transform(senate_districts, st_crs(ma_blkgrps_nfhza))
+      st_transform(senate_districts, st_crs(vt_blkgrps_flood))
       )
     ) %>% 
   mutate(NewArea = as.numeric(st_area(.)),
@@ -329,144 +403,105 @@ NFHZAbySenate <- ma_blkgrps_nfhza %>%
   replace_na(list(nfhzaPop = 0)) %>% 
   mutate(PctPopNFHZA = nfhzaPop/totalpopE*100)
 
-# identify HEVAC risk pops by district and calculate pop pct, and bring together with FEMA
-senate_floodPop_pct <- ma_blkgrps_hevac %>% 
-  transmute(NewPop = NewPop, OldArea = as.numeric(st_area(.))) %>% 
-  st_intersection(
-    st_make_valid(
-      st_transform(senate_districts, st_crs(ma_blkgrps_hevac))
-      )
-    ) %>% 
-  mutate(NewArea = as.numeric(st_area(.)),
-         Proportion = NewArea/OldArea,
-         hevacPop = as.integer(NewPop*Proportion)) %>% 
-  as.data.frame() %>% 
-  group_by(SEN_DIST) %>% 
-  summarize(hevacPop = sum(hevacPop)) %>% 
-  left_join(senate_names_pops, ., by = "SEN_DIST") %>% 
-  replace_na(list(hevacPop = 0)) %>% 
-  mutate(PctPopHEVAC = hevacPop/totalpopE*100) %>% 
-  left_join(NFHZAbySenate, ., by = "SEN_DIST") %>% 
-  select(-starts_with("totalpopE"))
 
-
-# Create counts of block groups in FEMA flood zones by jurisdiction for popup 
-muniNFHZA <- ma_blkgrps_sf %>%
+# Create counts of block groups in flood zones by jurisdiction for popup 
+muniNFHZA <- vt_blkgrps_sf %>%
   as.data.frame() %>%
-  filter(nfhzaRisk == "F" & POPSlabel != "No Pops of Concern") %>%
+  filter(floodRisk == "F" & POPSlabel != "No Pops of Concern") %>%
   group_by(TOWN) %>%
   summarize(BGsNFHZA = n())
 
-houseNFHZA <- ma_blkgrps_sf %>%
+houseNFHZA <- vt_blkgrps_sf %>%
   as.data.frame() %>%
-  filter(nfhzaRisk == "F" & POPSlabel != "No Pops of Concern") %>%
+  filter(floodRisk == "F" & POPSlabel != "No Pops of Concern") %>%
   group_by(REP_DIST) %>%
   summarize(BGsNFHZA = n())
 
-senateNFHZA <- ma_blkgrps_sf %>%
+senateNFHZA <- vt_blkgrps_sf %>%
   as.data.frame() %>%
-  filter(nfhzaRisk == "F" & POPSlabel != "No Pops of Concern") %>%
+  filter(floodRisk == "F" & POPSlabel != "No Pops of Concern") %>%
   group_by(SEN_DIST) %>%
   summarize(BGsNFHZA = n())
 
-# Create counts of block groups in hurricane evac zones by jurisdiction for popup
-muniHEVAC <- ma_blkgrps_sf %>%
-  as.data.frame() %>%
-  filter(hevacRisk == "H" & POPSlabel != "No Pops of Concern") %>%
-  group_by(TOWN) %>%
-  summarize(BGsHEVAC = n())
-
-houseHEVAC <- ma_blkgrps_sf %>%
-  as.data.frame() %>%
-  filter(hevacRisk == "H" & POPSlabel != "No Pops of Concern") %>%
-  group_by(REP_DIST) %>%
-  summarize(BGsHEVAC = n())
-
-senateHEVAC <- ma_blkgrps_sf %>%
-  as.data.frame() %>%
-  filter(hevacRisk == "H" & POPSlabel != "No Pops of Concern") %>%
-  group_by(SEN_DIST) %>%
-  summarize(BGsHEVAC = n())
 
 # simplify layers for faster loading and join BG stats
-ma_towns <- ma_towns %>% 
+vt_towns <- vt_towns %>% 
   left_join(., muniNFHZA, by = c("NAME" = "TOWN")) %>%
-  left_join(., muniHEVAC, by = c("NAME" = "TOWN")) %>%
-  replace_na(list(BGsNFHZA = 0, BGsHEVAC = 0)) %>%
+  replace_na(list(BGsNFHZA = 0)) %>%
   ms_simplify(., keep = 0.1, keep_shapes = TRUE)
 
 house_districts <- house_districts %>% 
   left_join(., houseNFHZA, by = "REP_DIST") %>%
-  left_join(., houseHEVAC, by = "REP_DIST") %>%
-  replace_na(list(BGsNFHZA = 0, BGsHEVAC = 0)) %>%
+  replace_na(list(BGsNFHZA = 0)) %>%
   ms_simplify(., keep = 0.1, keep_shapes = TRUE)
 
 senate_districts <- senate_districts %>% 
   left_join(., senateNFHZA, by = "SEN_DIST") %>%
-  left_join(., senateHEVAC, by = "SEN_DIST") %>%
-  replace_na(list(BGsNFHZA = 0, BGsHEVAC = 0)) %>%
+  replace_na(list(BGsNFHZA = 0)) %>%
   ms_simplify(., keep = 0.1, keep_shapes = TRUE)
 
-# create layer of ma_blkgrps_sf for flood and hurricane
-ma_blkgrps_sf_NFHZA <- ma_blkgrps_sf %>% 
-  filter(nfhzaRisk == "F" & POPSlabel != "No Pops of Concern") %>% 
-  select(NAME, REP_DIST, SEN_DIST, TOWN, POPSlabel, floodtypes) %>% 
-  ms_simplify(., keep = 0.1, keep_shapes = TRUE)
+# create layer of vt_blkgrps_sf for flood
+# vt_blkgrps_sf_NFHZA <- vt_blkgrps_sf %>% 
+#   filter(floodRisk == "F" & POPSlabel != "No Pops of Concern") %>% 
+#   select(NAME, REP_DIST, SEN_DIST, TOWN, POPSlabel, floodtypes) %>% 
+#   ms_simplify(., keep = 0.1, keep_shapes = TRUE)
 
-ma_blkgrps_sf_HEVAC <- ma_blkgrps_sf %>% 
-  filter(hevacRisk == "H" & POPSlabel != "No Pops of Concern") %>% 
-  select(NAME, REP_DIST, SEN_DIST, TOWN, POPSlabel) %>% 
-  ms_simplify(., keep = 0.1, keep_shapes = TRUE)
+vt_blkgrps_sf_FLOOD <- vt_blkgrps_sf %>% 
+  filter((nfhzaRisk == "F" & POPSlabel != "No Pops of Concern") | 
+           (rcRisk == "RC" & POPSlabel != "No Pops of Concern")) %>% 
+  mutate(floodLabel = str_trim( #get rid of white space at begin & end
+    gsub("^,*|(?<=,),|,$", "", # get rid of extra commas
+         str_remove_all( # get rid of NAs
+           paste(floodtypes, floodtype, sep = ","),
+           pattern = "NA"),
+         perl=T)
+    )) %>% 
+  select(NAME, REP_DIST, SEN_DIST, TOWN, POPSlabel, floodLabel) 
 
-# clean up
-rm(list = ls(pattern = paste("ne_","muni", "hevac", "nfhza", "_tracts_",
-                             "houseN", "senateN", "houseH", "senateH",
-                             "ma_blkgrps_sf$", sep = "|")))
+
+
+# # clean up
+# rm(list = ls(pattern = paste("ne_","muni", "hevac", "nfhza", "_tracts_",
+#                              "houseN", "senateN", "houseH", "senateH",
+#                              "vt_blkgrps_sf$", "_list",sep = "|")))
 ```
 
-Flood and storm surge are significant risks in Massachusetts. In the event of extensive inland or coastal flooding, evacuation may be required. For individuals and households with limited mobility, either due to inadequate access to transportation options or because of physical limitations, evacuation presents heightened risk. Evacuation may also prove especially difficult for individuals and households due to limited economic resources, difficulty understanding or accessing information, or low trust in official sources of information. 
+Flood and fluvial erosion are significant risks in Vermont. In the event of extensive flooding, evacuation may be required. For individuals and households with limited mobility, either due to inadequate access to transportation options or because of physical limitations, evacuation presents heightened risk. Evacuation may also prove especially difficult for individuals and households due to limited economic resources, difficulty understanding or accessing information, or low trust in official sources of information. 
 
-Over 371,000 people in Massachusetts live in a FEMA flood risk zone and almost one million live in a hurricane evacuation zone. Limited English speaking households, households without a car, and lower income persons are disproportionately present in either a flood or a hurricane evacuation zone.
+Over 61,000 people in Vermont live in a FEMA flood risk zone or river corridor subject to fluvial erosion. Low income persons, households without a car, and people with disabilities are more likely to live in flood zones or river corridors compared to the general population. 
 
-These interactive figures identify communities across Massachusetts that are most most vulnerable to the risks of inland flooding or coastal storm surge.
+These interactive figures identify communities across Vermont that are most most vulnerable to the risks of inland flooding or coastal storm surge.
 
 <br>
 
 ## Flood Hazard Exposure & Priority Populations by Census block group {.tabset}
 
 ### Flood
-```{r mapNFHZA, fig.align="left", fig.cap="Map of Census block groups with the highest concentrations of one or more priority populations living in FEMA flood zones."}
+```{r mapNFHZA, fig.align="left", fig.cap="Map of Census block groups with the highest concentrations of one or more priority populations living in FEMA flood zones or river corridors."}
 # create simplified towns layer for faster mapping
 # download state outline
-ma_state <- states(cb = TRUE) %>% 
-  filter(NAME == "Massachusetts")
+vt_state <- states(cb = TRUE) %>% 
+  filter(NAME == "Vermont")
 # filter out extra polygons, clip out boundaries from water, simplify
-ma_towns_simple <- ma_towns %>% 
+vt_towns_simple <- vt_towns %>% 
   filter(NAME != "County subdivisions not defined") %>% 
-  ms_clip(., ma_state) %>% 
+  ms_clip(., vt_state) %>% 
   ms_simplify(., keep = 0.1, keep_shapes = TRUE)
 
-PopupEJ <- paste0(EJbgs$NAME, "<br/>",
-                  "<b>Town:</b> ", EJbgs$TOWN, "<br/>",
-                  "<b>State House District:</b> ", EJbgs$REP_DIST, "<br/>",
-                  "<b>State Senate District:</b> ", EJbgs$SEN_DIST, "<br/>",
-                  "<b>Environmental Justice categories: </b>", EJbgs$EJlabel, "<br/>",
-                  "<b>Within FEMA flood zone?</b> ", EJbgs$nfhzaRisk)
+PopupHouse <- paste0("Vermont state House District ", "<b>",house_districts$REP_DIST,"</b>", " has ", "<b>",house_districts$BGsNFHZA,"</b>", " <b>Block Groups</b> with high percentages of priority populations living within FEMA flood zones or River Corridors.")
 
-PopupHouse <- paste0("Massachusetts state House District ", "<b>",house_districts$REP_DIST,"</b>", " has ", "<b>",house_districts$BGsNFHZA,"</b>", " <b>Block Groups</b> with high percentages of priority populations living within FEMA flood zones.")
+PopupSenate <- paste0("Vermont state Senate District ", "<b>",senate_districts$SEN_DIST,"</b>", " has ", "<b>",senate_districts$BGsNFHZA,"</b>", " <b>Block Groups</b> with high percentages of priority populations living within FEMA flood zones or River Corridors.")
 
-PopupSenate <- paste0("Massachusetts state Senate District ", "<b>",senate_districts$SEN_DIST,"</b>", " has ", "<b>",senate_districts$BGsNFHZA,"</b>", " <b>Block Groups</b> with high percentages of priority populations living within FEMA flood zones.")
-
-Popup <- paste0(ma_blkgrps_sf_NFHZA$NAME, "<br/>",
-                "<b>State House District:</b> ", ma_blkgrps_sf_NFHZA$REP_DIST, "<br/>",
-                "<b>State Senate District:</b> ", ma_blkgrps_sf_NFHZA$SEN_DIST, "<br/>",
-                "<b>Town:</b> ", ma_blkgrps_sf_NFHZA$TOWN, "<br/>",
-                "<b>Priority Populations: </b>", ma_blkgrps_sf_NFHZA$POPSlabel, "<br/>",
-                "<b>FEMA flood risks: </b> ", ma_blkgrps_sf_NFHZA$floodtypes)
+Popup <- paste0(vt_blkgrps_sf_FLOOD$NAME, "<br/>",
+                "<b>State House District:</b> ", vt_blkgrps_sf_FLOOD$REP_DIST, "<br/>",
+                "<b>State Senate District:</b> ", vt_blkgrps_sf_FLOOD$SEN_DIST, "<br/>",
+                "<b>Town:</b> ", vt_blkgrps_sf_FLOOD$TOWN, "<br/>",
+                "<b>Priority Populations: </b>", vt_blkgrps_sf_FLOOD$POPSlabel, "<br/>",
+                "<b>Flood risks: </b> ", vt_blkgrps_sf_FLOOD$floodLabel)
 
 leaflet(width = "100%") %>% 
   addProviderTiles(providers$Stamen.TonerLite) %>% 
-  addPolygons(data = ma_towns_simple,
+  addPolygons(data = vt_towns_simple,
               weight = 0.7,
               opacity = 1,
               color = "gray",
@@ -504,23 +539,7 @@ leaflet(width = "100%") %>%
                 fillOpacity = 0,
                 bringToFront = TRUE),
               group = "State Senate Districts") %>% 
-  addPolygons(data = EJbgs,
-              # fillColor = "red",
-              weight = 2,
-              opacity = 1,
-              color = "purple",
-              dashArray = 3,
-              fillOpacity = 0,
-              label=~TOWN,
-              popup = PopupEJ,
-              highlight = highlightOptions(
-                weight = 5,
-                color = "#666",
-                dashArray = "",
-                fillOpacity = 0,
-                bringToFront = TRUE),
-              group = "Environmental Justice communities") %>% 
-  addPolygons(data = ma_blkgrps_sf_NFHZA, 
+  addPolygons(data = vt_blkgrps_sf_FLOOD, 
               color = "red",
               weight = 0.5,
               opacity = 0.7,
@@ -538,140 +557,32 @@ leaflet(width = "100%") %>%
   addLegend(colors = "red",
             labels = "Flood Risk + Hi Priority Pops",
             position = "bottomleft") %>% 
-  setView(lng = -71.7, 42.1, zoom = 8) %>% 
+  setView(lng = -72.7, 43.7, zoom = 7) %>% 
   # addMiniMap() %>% 
   addScaleBar(position = "bottomright") %>% 
   addSearchFeatures(targetGroups  = 'muni', 
                     options = searchFeaturesOptions(zoom=14, openPopup=TRUE, hideMarkerOnCollapse=T)) %>% 
   addLayersControl(
-    overlayGroups = c("Environmental Justice communities", "State House Districts","State Senate Districts"),
+    overlayGroups = c("State House Districts","State Senate Districts"),
     options = layersControlOptions(collapsed = TRUE)
   ) %>% 
-  hideGroup(c("Environmental Justice communities", "State House Districts","State Senate Districts"))
+  hideGroup(c("State House Districts","State Senate Districts"))
 ```
 
 <br>
 
 <br>
 
-### Hurricane
-```{r mapHEVAC, fig.align="left", fig.cap="Map of Census block groups with the highest concentrations of one or more priority populations living in hurricane evacuation zones."}
-PopupEJ <- paste0(EJbgs$NAME, "<br/>",
-                  "<b>Town:</b> ", EJbgs$TOWN, "<br/>",
-                  "<b>State House District:</b> ", EJbgs$REP_DIST, "<br/>",
-                  "<b>State Senate District:</b> ", EJbgs$SEN_DIST, "<br/>",
-                  "<b>Environmental Justice categories: </b>", EJbgs$EJlabel, "<br/>",
-                  "<b>Within hurricane evacuation zone?</b> ", EJbgs$hevacRisk)
+### About the map
 
-PopupHouse <- paste0("Massachusetts state House District ", "<b>",house_districts$REP_DIST,"</b>", " has ", "<b>",house_districts$BGsHEVAC,"</b>", " <b>Block Groups</b> with high percentages of priority populations living within hurricane evacuation zones.")
+This map shows communities (i.e. Census Block Groups) with high percentages of one or more priority population groups (80th percentile for the state) *AND* that are living within FEMA flood risk zones *OR* River Corridors. 
 
-PopupSenate <- paste0("Massachusetts state Senate District ", "<b>",senate_districts$SEN_DIST,"</b>", " has ", "<b>",senate_districts$BGsHEVAC,"</b>", " <b>Block Groups</b> with high percentages of priority populations living within hurricane evacuation zones.")
+The analysis of FEMA flood exposure presented here is based on the Federal Emergency Management Agency’s (FEMA) [National Flood Hazard Layer (NFHL)](https://www.fema.gov/national-flood-hazard-layer-nfhl), a digital version of FEMA’s most recent flood maps. Flood risk areas are subject to floods with an Annual Exceedance Probability (AEP) of 1% (also known as a ‘100-year’ flood) and areas subject to 0.2% AEP (also known as a ‘500-year’ flood). Areas within the 1% AEP flood zone are designated by FEMA as Special Flood Hazard Areas, and development within those zones must be covered by flood insurance. Areas within the 0.2% AEP are not currently regulated, but these areas are nevertheless subject to flood risk under more extreme, albeit less frequent, flooding circumstances. 
 
-Popup <- paste0(ma_blkgrps_sf_HEVAC$NAME, "<br/>",
-                "<b>State House District:</b> ", ma_blkgrps_sf_HEVAC$REP_DIST, "<br/>",
-                "<b>State Senate District:</b> ", ma_blkgrps_sf_HEVAC$SEN_DIST, "<br/>",
-                "<b>Town:</b> ", ma_blkgrps_sf_HEVAC$TOWN, "<br/>",
-                "<b>Priority Populations: </b>", ma_blkgrps_sf_HEVAC$POPSlabel)
+*Note that digital data on flood risk for much of northern Vermont is not currently available from FEMA. FEMA flood risk for northern Vermont is likely to be underestimated.*
 
-leaflet(width = "100%") %>% 
-  addProviderTiles(providers$Stamen.TonerLite) %>% 
-  addPolygons(data = ma_towns_simple,
-              weight = 0.7,
-              opacity = 1,
-              color = "gray",
-              fillOpacity = 0,
-              label=~NAME, popup=~NAMELSAD, group='muni') %>% 
-  addPolygons(data = house_districts,
-              weight = 2,
-              opacity = 1,
-              color = "blue",
-              dashArray = 3,
-              fillOpacity = 0,
-              # fillColor = "blue",
-              label = ~REP_DIST,
-              popup = PopupHouse,
-              highlight = highlightOptions(
-                weight = 5,
-                color = "#666",
-                dashArray = "",
-                fillOpacity = 0,
-                bringToFront = TRUE),
-              group = "State House Districts") %>% 
-  addPolygons(data = senate_districts,
-              # fillColor = "red",
-              weight = 2,
-              opacity = 1,
-              color = "green",
-              dashArray = 3,
-              fillOpacity = 0,
-              label=~SEN_DIST,
-              popup = PopupSenate,
-              highlight = highlightOptions(
-                weight = 5,
-                color = "#666",
-                dashArray = "",
-                fillOpacity = 0,
-                bringToFront = TRUE),
-              group = "State Senate Districts") %>% 
-  addPolygons(data = EJbgs,
-              # fillColor = "red",
-              weight = 2,
-              opacity = 1,
-              color = "purple",
-              dashArray = 3,
-              fillOpacity = 0,
-              label=~TOWN,
-              popup = PopupEJ,
-              highlight = highlightOptions(
-                weight = 5,
-                color = "#666",
-                dashArray = "",
-                fillOpacity = 0,
-                bringToFront = TRUE),
-              group = "Environmental Justice communities") %>% 
-  addPolygons(data = ma_blkgrps_sf_HEVAC, 
-              color = "red",
-              weight = 0.5,
-              opacity = 0.7,
-              # color = "white",
-              dashArray = 3,
-              fillOpacity = 0.7,
-              label=~TOWN, 
-              popup = Popup,
-              highlight = highlightOptions(
-                weight = 5,
-                color = "#666",
-                dashArray = "",
-                fillOpacity = 0.7,
-                bringToFront = TRUE)) %>% 
-  addLegend(colors = "red",
-            labels = "Hurricane Evacuation Risk + Hi Priority Pops",
-            position = "bottomleft") %>% 
-  setView(lng = -71.7, 42.1, zoom = 8) %>% 
-  # addMiniMap() %>% 
-  addScaleBar(position = "bottomright") %>% 
-  addSearchFeatures(targetGroups  = 'muni', 
-                    options = searchFeaturesOptions(zoom=14, openPopup=TRUE, hideMarkerOnCollapse=T)) %>% 
-  addLayersControl(
-    overlayGroups = c("Environmental Justice communities", "State House Districts","State Senate Districts"),
-    options = layersControlOptions(collapsed = TRUE)
-  ) %>% 
-  hideGroup(c("Environmental Justice communities", "State House Districts","State Senate Districts"))
-```
-
-<br>
-
-<br>
-
-### About the maps
-
-These maps show communities (i.e. Census Block Groups) with high percentages of one or more priority population groups (80th percentile for the state) *AND* that are living within flood risk zones or hurricane evacuation zones. 
-
-The analysis of flood exposure presented here is based on the Federal Emergency Management Agency’s (FEMA) [National Flood Hazard Layer (NFHL)](https://www.fema.gov/national-flood-hazard-layer-nfhl), a digital version of FEMA’s most recent flood maps. Flood risk areas are subject to floods with an Annual Exceedance Probability (AEP) of 1% (also known as a ‘100-year’ flood) and areas subject to 0.2% AEP (also known as a ‘500-year’ flood). Areas within the 1% AEP flood zone are designated by FEMA as Special Flood Hazard Areas, and development within those zones must be covered by flood insurance. Areas within the 0.2% AEP are not currently regulated, but these areas are nevertheless subject to flood risk under more extreme, albeit less frequent, flooding circumstances. 
-
-*Note that digital data on flood risk for most of western Massachusetts is not currently available from FEMA. Flood risk for western Massachusetts is likely to be underestimated.*
-
-The analysis of hurricane evacuation risk presented here is based on Hurricane Evacuation Maps produced by the [U.S. Army Corps of Engineers for New England](https://www.nae.usace.army.mil/Missions/Projects-Topics/Massachusetts-Hurricane-Studies/). The maps show Hurricane Evacuation Zones that are recommended to be evacuated during potential worst-case hurricane storm surge inundation. These evacuation zones are based on storm surge modeling by the National Weather Service’s National Hurricane Center using the hydrodynamic [Sea, Lake, and Overland Surges from Hurricanes (SLOSH) model](https://www.nhc.noaa.gov/nationalsurge/) to simulate storm surge from tropical cyclones. 
+The analysis of exposure to River Corridors is based on maps produced by the [Vermont Agency of Natural Resources (ANR)](https://floodready.vermont.gov/flood_protection/river_corridors_floodplains/river_corridors). The ANR’s river corridors represent areas surrounding a river that allow for the meandering, floodplain, and the riparian functions necessary to restore and maintain the naturally stable or least erosive form of a river in order to minimize erosion hazards over time. Lands within and immediately abutting a river corridor are at higher risk to fluvial erosion. Damage surveys in Vermont have shown that fluvial erosion, not inundation, is the most common
+natural hazard type in Vermont.
 
 Priority populations represent demographic groups that environmental justice policy and research have identified as being especially vulnerable to environmental burdens as a consequence of social or economic disadvantage, physical vulnerability, or historic and persistent discrimination and inequality. These include:
 
@@ -684,35 +595,34 @@ Priority populations represent demographic groups that environmental justice pol
 * Individuals under the age of 18
 * Adults 18 years or older with a physical disability
 * Households without access to a car
-* Environmental Justice communities defined by state policy
 
 
 Identifying populations at risk:
 
-The highlighted areas at risk in the maps represent entire Census block groups. Please note, however, that not all of the Census block group is necessarily at risk of flooding or hurricane evacuation. The analysis identified only those *developed or occupied portions of block groups* falling within flood zones or hurricane evacuation zones based on ancillary data from the [National Land Cover Database (NLCD)](https://www.mrlc.gov/data/nlcd-2016-land-cover-conus). The NLCD is a nationwide geospatial database on land cover and land cover change at a 30m resolution produced by the US Geological Survey (USGS) in partnership with several federal agencies as part of the Multi-Resolution Land Characteristics Consortium (MRLC). Entire Census block groups are presented in these maps for ease of visualization at the scale of the state. Please consult the supporting Technical Report for this analysis for more detailed figures and tables. 
+The highlighted areas at risk in the maps represent entire Census block groups. Please note, however, that not all of the Census block group is necessarily at risk of flooding or river corridors. The analysis identified only those *developed or occupied portions of block groups* falling within flood zones or river corridors based on ancillary data from the [National Land Cover Database (NLCD)](https://www.mrlc.gov/data/nlcd-2016-land-cover-conus). The NLCD is a nationwide geospatial database on land cover and land cover change at a 30m resolution produced by the US Geological Survey (USGS) in partnership with several federal agencies as part of the Multi-Resolution Land Characteristics Consortium (MRLC). Entire Census block groups are presented in these maps for ease of visualization at the scale of the state. Please consult the supporting Technical Report for this analysis for more detailed figures and tables. 
 
 <br>
 
 <br>
 
-## Population-weighted flood risk or hurricane evacuation exposure for priority populations {.tabset}
+## Population-weighted flood risk exposure for priority populations {.tabset}
 
 ### Flood
 
-```{r graphFEMA, fig.align="center", fig.cap="Percentage of priority populations living within FEMA flood zones."}
+```{r graphFEMA, fig.align="center", fig.cap="Percentage of priority populations living within FEMA flood zones or River Corridors."}
 # Add status variable and recode demographic names
-ma_FloodPops_df %>% 
+vt_FloodPops_df %>% 
   mutate(
     Status = case_when(
            Group == "Total Pop" ~ "State avg",
-           PctFlood < ma_FloodPops_df[ma_FloodPops_df$Group=="Total Pop",4] ~ "Below state avg",
-           PctFlood > ma_FloodPops_df[ma_FloodPops_df$Group=="Total Pop",4] ~ "Above state avg"),
+           PctFloodPop < vt_FloodPops_df[vt_FloodPops_df$Group=="Total Pop",10] ~ "Below state avg",
+           PctFloodPop > vt_FloodPops_df[vt_FloodPops_df$Group=="Total Pop",10] ~ "Above state avg"),
     Group = recode(Group, "Minority" = "People of Color",
                         "No HS Dip" = "No HS Diploma"),
-    PctFlood = round(PctFlood,1)) %>% 
-  mutate(Group = factor(Group) %>% fct_reorder(PctFlood, .desc = TRUE)) %>% 
+    PctFloodPop = round(PctFloodPop,1)) %>% 
+  mutate(Group = factor(Group) %>% fct_reorder(PctFloodPop, .desc = TRUE)) %>% 
   mutate(group_index = as.numeric(Group)) %>% 
-  hchart(., "bar", hcaes(x = group_index, y = PctFlood, 
+  hchart(., "bar", hcaes(x = group_index, y = PctFloodPop, 
                          group = Status, name = Group), 
                          color = c("#F7A35C", "#7CB5EC", "#000000"),
          pointWidth = 15) %>% 
@@ -720,56 +630,39 @@ ma_FloodPops_df %>%
            labels = list(format = "{value}%")) %>% 
   hc_xAxis(title = NULL, type = "category", labels = list(step = 1)) %>% 
   hc_tooltip(pointFormat = "{series.name}: {point.y}%") %>% 
-  hc_title(text = "Massachusetts Populations Living within Flood Zones", useHTML = TRUE)
+  hc_title(text = "Vermont Populations Living within Flood Zones or River Corridors", useHTML = TRUE)
 ```
 
 <br>
 
 <br>
 
-### Hurrican Evacuation
+### About the graph
 
-```{r graphHEVAC, fig.align="center", fig.cap="Massachusetts Populations Living within Hurricane Evacuation Zones."}
-# Add status variable and recode demographic names
-ma_HevacPops_df %>% 
-  mutate(
-    Status = case_when(
-           Group == "Total Pop" ~ "State avg",
-           PctHevac < ma_HevacPops_df[ma_HevacPops_df$Group=="Total Pop",4] ~ "Below state avg",
-           PctHevac > ma_HevacPops_df[ma_HevacPops_df$Group=="Total Pop",4] ~ "Above state avg"),
-    Group = recode(Group, "Minority" = "People of Color",
-                        "No HS Dip" = "No HS Diploma"),
-    PctHevac = round(PctHevac,1)) %>% 
-  mutate(Group = factor(Group) %>% fct_reorder(PctHevac, .desc = TRUE)) %>% 
-  mutate(group_index = as.numeric(Group)) %>% 
-  hchart(., "bar", hcaes(x = group_index, y = PctHevac, 
-                         group = Status, name = Group), 
-                         color = c("#F7A35C", "#7CB5EC", "#000000"),
-         pointWidth = 15) %>% 
-  hc_yAxis(title = list(text = "Percentage of population"),
-           labels = list(format = "{value}%")) %>% 
-  hc_xAxis(title = NULL, type = "category", labels = list(step = 1)) %>% 
-  hc_tooltip(pointFormat = "{series.name}: {point.y}%") %>% 
-  hc_title(text = "Massachusetts Populations Living within Hurricane Evacuation Zones", useHTML = TRUE)
-```
+This graph shows population-weighted flood risk or river corridor exposure by group:
 
-<br>
+* The analysis of FEMA flood exposure presented here is based on the Federal Emergency Management Agency’s (FEMA) [National Flood Hazard Layer (NFHL)](https://www.fema.gov/national-flood-hazard-layer-nfhl), a digital version of FEMA’s most recent flood maps. Flood risk areas are subject to floods with an Annual Exceedance Probability (AEP) of 1% (also known as a ‘100-year’ flood) and areas subject to 0.2% AEP (also known as a ‘500-year’ flood). Areas within the 1% AEP flood zone are designated by FEMA as Special Flood Hazard Areas, and development within those zones must be covered by flood insurance. Areas within the 0.2% AEP are not currently regulated, but these areas are nevertheless subject to flood risk under more extreme, albeit less frequent, flooding circumstances. 
 
-<br>
+*Note that digital data on flood risk for much of northern Vermont is not currently available from FEMA. FEMA flood risk for northern Vermont is likely to be underestimated.*
 
-### About the graphs
+* The analysis of exposure to River Corridors is based on maps produced by the [Vermont Agency of Natural Resources (ANR)](https://floodready.vermont.gov/flood_protection/river_corridors_floodplains/river_corridors). The ANR’s river corridors represent areas surrounding a river that allow for the meandering, floodplain, and the riparian functions necessary to restore and maintain the naturally stable or least erosive form of a river in order to minimize erosion hazards over time. Lands within and immediately abutting a river corridor are at higher risk to fluvial erosion. Damage surveys in Vermont have shown that fluvial erosion, not inundation, is the most common
+natural hazard type in Vermont.
 
-These graphs show population-weighted flood risk or hurricane evacuation exposure by group:
+Priority populations represent demographic groups that environmental justice policy and research have identified as being especially vulnerable to environmental burdens as a consequence of social or economic disadvantage, physical vulnerability, or historic and persistent discrimination and inequality. These include:
 
-* The analysis of flood exposure presented here is based on the Federal Emergency Management Agency’s (FEMA) [National Flood Hazard Layer (NFHL)](https://www.fema.gov/national-flood-hazard-layer-nfhl), a digital version of FEMA’s most recent flood maps. Flood risk areas are subject to floods with an Annual Exceedance Probability (AEP) of 1% (also known as a ‘100-year’ flood) and areas subject to 0.2% AEP (also known as a ‘500-year’ flood). Areas within the 1% AEP flood zone are designated by FEMA as Special Flood Hazard Areas, and development within those zones must be covered by flood insurance. Areas within the 0.2% AEP are not currently regulated, but these areas are nevertheless subject to flood risk under more extreme, albeit less frequent, flooding circumstances. 
-
-*Note that digital data on flood risk for most of western Massachusetts is not currently available from FEMA. Flood risk for western Massachusetts is likely to be underestimated.*
-
-* The analysis of hurricane evacuation risk presented here is based on Hurricane Evacuation Maps produced by the [U.S. Army Corps of Engineers for New England](https://www.nae.usace.army.mil/Missions/Projects-Topics/Massachusetts-Hurricane-Studies/). The maps show Hurricane Evacuation Zones that are recommended to be evacuated during potential worst-case hurricane storm surge inundation. These evacuation zones are based on storm surge modeling by the National Weather Service’s National Hurricane Center using the hydrodynamic [Sea, Lake, and Overland Surges from Hurricanes (SLOSH) model](https://www.nhc.noaa.gov/nationalsurge/) to simulate storm surge from tropical cyclones. 
+* People of color (i.e., persons who are of Hispanic ethnicity or racially not White)
+* Low income persons (i.e., income less than 200% of the poverty line)
+* Limited English speaking households (i.e., households where no adult speaks English "very well")
+* Adults 25 years or older without a high school diploma
+* Children under the age of 5
+* Adults over the age of 64
+* Individuals under the age of 18
+* Adults 18 years or older with a physical disability
+* Households without access to a car
 
 Identifying populations at risk:
 
-In order to identify counts and percentages of populations at risk, polygons of flood or hurricane evacuation risk zones were spatially intersected with the *developed or occupied portions of block groups* based on ancillary data from the [National Land Cover Database (NLCD)](https://www.mrlc.gov/data/nlcd-2016-land-cover-conus). The NLCD is a nationwide geospatial database on land cover and land cover change at a 30m resolution produced by the US Geological Survey (USGS) in partnership with several federal agencies as part of the Multi-Resolution Land Characteristics Consortium (MRLC). Populations at risk were calculated based on a process of areal apportionment. The population at risk from flooding was calculated as the product of the areal proportion of the intersecting flood and developed Block Group polygons: 
+In order to identify counts and percentages of populations at risk, polygons of flood or river corridor risk zones were spatially intersected with the *developed or occupied portions of block groups* based on ancillary data from the [National Land Cover Database (NLCD)](https://www.mrlc.gov/data/nlcd-2016-land-cover-conus). The NLCD is a nationwide geospatial database on land cover and land cover change at a 30m resolution produced by the US Geological Survey (USGS) in partnership with several federal agencies as part of the Multi-Resolution Land Characteristics Consortium (MRLC). Populations at risk were calculated based on a process of areal apportionment. The population at risk from flooding was calculated as the product of the areal proportion of the intersecting flood and developed Block Group polygons: 
 *Population at risk = Proportion of developed Block Group Intersection x Population of developed Block Group*
 For example, if 10% of the developed area of a Census Block Group  intersected/overlapped with a flood polygon, it was assumed that 10% of the population is exposed to that flood risk. Assuming a population of 100 people in the developed portion of the Block Group, this would mean 100 x .10 = 10 people would be subject to flood risk.
 
@@ -777,7 +670,7 @@ For example, if 10% of the developed area of a Census Block Group  intersected/o
 
 <br>
 
-## Flood and Hurricane Evacuation Burdens by Jurisdiction {.tabset}
+## Flood Evacuation Burdens by Jurisdiction {.tabset}
 
 ### By municipality
 
@@ -788,24 +681,22 @@ sketch1 = htmltools::withTags(table(
   thead(
     tr(
       th(rowspan = 2, 'City/Town'),
-      th(align="center", colspan = 2, 'FEMA Flood Risk'),
-      th(align="center", colspan = 2, 'Hurricane Evacuation Risk')
+      th(align="center", colspan = 2, 'Flood Risk')
     ),
     tr(
-      lapply(rep(c('Pop', 'Pct'), 2), th)
+      lapply(rep(c('Pop', 'Pct'), 1), th)
     )
   )
 ))
 
-town_floodPop_pct %>% 
-  mutate(PctPopNFHZA = PctPopNFHZA/100,
-         PctPopHEVAC = PctPopHEVAC/100) %>% 
+town_nfhzaPop_pct %>% 
+  mutate(PctPopNFHZA = PctPopNFHZA/100) %>% 
   select(-totalpopE) %>% 
-  arrange(NAME) %>% 
+  arrange(NAMELSAD) %>% 
   datatable(., rownames = FALSE, options = list(pageLength = 10), 
             container = sketch1) %>% 
-  formatRound(., columns = c(2,4), digits = 0, mark = ",") %>% 
-  formatPercentage(., columns = c(3,5), digits = 1)
+  formatRound(., columns = 2, digits = 0, mark = ",") %>% 
+  formatPercentage(., columns = 3, digits = 1)
 ```
 
 <!-- > Number of Census block groups with three or more cumualtive environmental burdens and high concentrations of populations of concern -->
@@ -822,23 +713,22 @@ sketch2 = htmltools::withTags(table(
   thead(
     tr(
       th(rowspan = 2, 'House District'),
-      th(align="center", colspan = 2, 'FEMA Flood Risk'),
-      th(align="center", colspan = 2, 'Hurricane Evacuation Risk')
+      th(align="center", colspan = 2, 'Flood Risk')
     ),
     tr(
-      lapply(rep(c('Pop', 'Pct'), 2), th)
+      lapply(rep(c('Pop', 'Pct'), 1), th)
     )
   )
 ))
 
-house_floodPop_pct %>% 
-  mutate(PctPopNFHZA = PctPopNFHZA/100,
-         PctPopHEVAC = PctPopHEVAC/100) %>%  
+NFHZAbyHouse %>% 
+  select(-totalpopE) %>% 
+  mutate(PctPopNFHZA = PctPopNFHZA/100) %>%  
   arrange(REP_DIST) %>% 
   datatable(., rownames = FALSE, options = list(pageLength = 10), 
             container = sketch2) %>% 
-  formatRound(., columns = c(2,4), digits = 0, mark = ",") %>% 
-  formatPercentage(., columns = c(3,5), digits = 1)
+  formatRound(., columns = 2, digits = 0, mark = ",") %>% 
+  formatPercentage(., columns = 3, digits = 1)
 ```
 
 <br>
@@ -854,23 +744,22 @@ sketch3 = htmltools::withTags(table(
   thead(
     tr(
       th(rowspan = 2, 'Senate District'),
-      th(align="center", colspan = 2, 'FEMA Flood Risk'),
-      th(align="center", colspan = 2, 'Hurricane Evacuation Risk')
+      th(align="center", colspan = 2, 'Flood Risk')
     ),
     tr(
-      lapply(rep(c('Pop', 'Pct'), 2), th)
+      lapply(rep(c('Pop', 'Pct'), 1), th)
     )
   )
 ))
 
-senate_floodPop_pct %>% 
-  mutate(PctPopNFHZA = PctPopNFHZA/100,
-         PctPopHEVAC = PctPopHEVAC/100) %>%  
+NFHZAbySenate %>% 
+  select(-totalpopE) %>% 
+  mutate(PctPopNFHZA = PctPopNFHZA/100) %>%  
   arrange(SEN_DIST) %>% 
   datatable(., rownames = FALSE, options = list(pageLength = 10), 
             container = sketch3) %>% 
-  formatRound(., columns = c(2,4), digits = 0, mark = ",") %>% 
-  formatPercentage(., columns = c(3,5), digits = 1)
+  formatRound(., columns = 2, digits = 0, mark = ",") %>% 
+  formatPercentage(., columns = 3, digits = 1)
 ```
 
 <br>
@@ -879,16 +768,17 @@ senate_floodPop_pct %>%
 
 ### About the tables
 
-These tables show the number and percentage of the general population by jurisdiction exposed to FEMA flood risk or hurricane evacuation risk. FEMA flood risk is calculated as the percentage of a Census block group that falls within 100-year or 500-year flood risk zones and aggregated by jurisdiction. Hurricane evacuation risk is calculated as the percentage of a Census block group that falls within hurricane evacuation zones identified by the Massachusetts Emergency Management Agency and U.S. Army Corps of Engineers, and aggregated by jurisdiction. Population values are derived from the American Community Survey 5-year estimates for 2014-2018.
+These tables show the number and percentage of the general population by jurisdiction exposed to FEMA flood risk or river corridors. 
 
-* The analysis of flood exposure presented here is based on the Federal Emergency Management Agency’s (FEMA) [National Flood Hazard Layer (NFHL)](https://www.fema.gov/national-flood-hazard-layer-nfhl), a digital version of FEMA’s most recent flood maps. Flood risk areas are subject to floods with an Annual Exceedance Probability (AEP) of 1% (also known as a ‘100-year’ flood) and areas subject to 0.2% AEP (also known as a ‘500-year’ flood). Areas within the 1% AEP flood zone are designated by FEMA as Special Flood Hazard Areas, and development within those zones must be covered by flood insurance. Areas within the 0.2% AEP are not currently regulated, but these areas are nevertheless subject to flood risk under more extreme, albeit less frequent, flooding circumstances. 
+* The analysis of FEMA flood exposure presented here is based on the Federal Emergency Management Agency’s (FEMA) [National Flood Hazard Layer (NFHL)](https://www.fema.gov/national-flood-hazard-layer-nfhl), a digital version of FEMA’s most recent flood maps. Flood risk areas are subject to floods with an Annual Exceedance Probability (AEP) of 1% (also known as a ‘100-year’ flood) and areas subject to 0.2% AEP (also known as a ‘500-year’ flood). Areas within the 1% AEP flood zone are designated by FEMA as Special Flood Hazard Areas, and development within those zones must be covered by flood insurance. Areas within the 0.2% AEP are not currently regulated, but these areas are nevertheless subject to flood risk under more extreme, albeit less frequent, flooding circumstances. 
 
-*Note that digital data on flood risk for most of western Massachusetts is not currently available from FEMA. Flood risk for western Massachusetts is likely to be underestimated.*
+*Note that digital data on flood risk for much of northern Vermont is not currently available from FEMA. FEMA flood risk for northern Vermont is likely to be underestimated.*
 
-* The analysis of hurricane evacuation risk presented here is based on Hurricane Evacuation Maps produced by the [U.S. Army Corps of Engineers for New England](https://www.nae.usace.army.mil/Missions/Projects-Topics/Massachusetts-Hurricane-Studies/). The maps show Hurricane Evacuation Zones that are recommended to be evacuated during potential worst-case hurricane storm surge inundation. These evacuation zones are based on storm surge modeling by the National Weather Service’s National Hurricane Center using the hydrodynamic [Sea, Lake, and Overland Surges from Hurricanes (SLOSH) model](https://www.nhc.noaa.gov/nationalsurge/) to simulate storm surge from tropical cyclones. 
+* The analysis of exposure to River Corridors is based on maps produced by the [Vermont Agency of Natural Resources (ANR)](https://floodready.vermont.gov/flood_protection/river_corridors_floodplains/river_corridors). The ANR’s river corridors represent areas surrounding a river that allow for the meandering, floodplain, and the riparian functions necessary to restore and maintain the naturally stable or least erosive form of a river in order to minimize erosion hazards over time. Lands within and immediately abutting a river corridor are at higher risk to fluvial erosion. Damage surveys in Vermont have shown that fluvial erosion, not inundation, is the most common
+natural hazard type in Vermont.
 
 Identifying populations at risk:
 
-In order to identify counts and percentages of populations at risk, polygons of flood or hurricane evacuation risk zones were spatially intersected with the *developed or occupied portions of block groups* based on ancillary data from the [National Land Cover Database (NLCD)](https://www.mrlc.gov/data/nlcd-2016-land-cover-conus). The NLCD is a nationwide geospatial database on land cover and land cover change at a 30m resolution produced by the US Geological Survey (USGS) in partnership with several federal agencies as part of the Multi-Resolution Land Characteristics Consortium (MRLC). Populations at risk were calculated based on a process of areal apportionment. The population at risk from flooding was calculated as the product of the areal proportion of the intersecting flood and developed Block Group polygons: 
+In order to identify counts and percentages of populations at risk, polygons of flood or river corridor risk zones were spatially intersected with the *developed or occupied portions of block groups* based on ancillary data from the [National Land Cover Database (NLCD)](https://www.mrlc.gov/data/nlcd-2016-land-cover-conus). The NLCD is a nationwide geospatial database on land cover and land cover change at a 30m resolution produced by the US Geological Survey (USGS) in partnership with several federal agencies as part of the Multi-Resolution Land Characteristics Consortium (MRLC). Populations at risk were calculated based on a process of areal apportionment. The population at risk from flooding was calculated as the product of the areal proportion of the intersecting flood and developed Block Group polygons: 
 *Population at risk = Proportion of developed Block Group Intersection x Population of developed Block Group*
 For example, if 10% of the developed area of a Census Block Group  intersected/overlapped with a flood polygon, it was assumed that 10% of the population is exposed to that flood risk. Assuming a population of 100 people in the developed portion of the Block Group, this would mean 100 x .10 = 10 people would be subject to flood risk.
