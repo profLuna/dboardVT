@@ -861,6 +861,11 @@ For example, limited English speaking households (i.e., 'Limited English HH'), r
 ### By municipality
 
 ```{r townTable, fig.align="center"}
+# create variables for use in inline text example to explain percentile ranks
+exLSTtown <- vt_towns %>% as.data.frame() %>% filter(pctrank_meanAvgLST.mean > 95) %>% select(NAME) %>% slice_tail(n = 1) %>% pull()
+exLST <- vt_towns %>% as.data.frame() %>% filter(NAME == exLSTtown) %>% select(meanAvgLST.mean) %>% pull() %>% round(., 1)
+exLSTpct <- vt_towns %>% as.data.frame() %>% filter(NAME == exLSTtown) %>% select(pctrank_meanAvgLST.mean) %>% pull() %>% round(., 1)
+
 # create object to hold complex headers for table
 sketch1 = htmltools::withTags(table(
   class = 'display',
@@ -970,7 +975,7 @@ senate_districts %>%
 
 ### About the tables
 
-These tables show the average day-night land surface temperatures (LST), Urban Heat Island (UHI) effects, and average nighttime LST by jurisdiction for July-August 2019. LST values are averaged across Census block groups within the jurisdiction. A rank indicates the percentage of jurisdictions that are below that value. For example, Boston had a Day-Night average Land Surface Temperature (LST) of 84.8° Fahrenheit, and a Day-Night LST rank of 98.3. The latter means that Boston's average LST was higher than 98.3% of all other municipalities in the state.
+These tables show the average day-night land surface temperatures (LST), Urban Heat Island (UHI) effects, and average nighttime LST by jurisdiction for July-August 2019. LST values are averaged across Census block groups within the jurisdiction. A rank indicates the percentage of jurisdictions that are below that value. For example, `r exLSTtown` had a Day-Night average Land Surface Temperature (LST) of `r exLST`° Fahrenheit, and a Day-Night LST rank of `r exLSTpct`. The latter means that `r exLSTtown`'s average LST was higher than `r exLSTpct`% of all other municipalities in the state.
 
 * Day-Night Average LST: Day-Night Average Land Surface Temperatures (LST) represent a simple average of LST values collected during the day (11:48am - 2pm) and during the night (12am - 3:06am) over eight days, from July 28 to
 August 4, 2019 derived from NASA’s

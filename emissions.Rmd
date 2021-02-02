@@ -896,6 +896,11 @@ For example, limited English speaking households (i.e., 'Limited English HH') in
 ### By municipality
 
 ```{r townTable, fig.align="center"}
+# create variables for use in inline text example to explain percentile ranks
+exPM25town <- vt_towns %>% as.data.frame() %>% filter(pctrank_PM25_19.mean > 95) %>% select(NAME) %>% slice_tail(n = 1) %>% pull()
+exPM25 <- vt_towns %>% as.data.frame() %>% filter(NAME == exTown) %>% select(PM25_19.mean) %>% pull() %>% round(., 3)
+exPM25pct <- vt_towns %>% as.data.frame() %>% filter(NAME == exTown) %>% select(pctrank_PM25_19.mean) %>% pull() %>% round(., 1)
+
 # create object to hold complex headers for table
 sketch1 = htmltools::withTags(table(
   class = 'display',
@@ -989,7 +994,7 @@ senate_districts %>%
 
 ### About the tables
 
-These tables show the average air pollution concentration values (micrograms per cubic meter of air) or average traffic burden scores (Proximity to High Traffic Corridors) for Census block groups in that jurisdiction, along with the rank. A rank indicates the percentage of jurisdictions that are below that value. For example, Boston has an average PM~2.5~ concentration value of 6.7 micrograms per cubic meter, and a PM~2.5~ rank of 93.4. The latter means that Boston's average PM~2.5~ concentration is higher than that of 93.4% of all other municipalities in the state. 
+These tables show the average air pollution concentration values (micrograms per cubic meter of air) or average traffic burden scores (Proximity to High Traffic Corridors) for Census block groups in that jurisdiction, along with the rank. A rank indicates the percentage of jurisdictions that are below that value. For example, `r exPM25town` has an average PM~2.5~ concentration value of `r exPM25` micrograms per cubic meter, and a PM~2.5~ rank of `r exPM25pct`. The latter means that `r exPM25town`'s average PM~2.5~ concentration is higher than that of `r exPM25pct`% of all other municipalities in the state. 
 
 * PM~2.5~: Particulate matter in the air that is 2.5 microns or less in diameter (about 30 times smaller than the width of a human hair). These small particulates pose a threat to human health because they can penetrate deeply into the lungs and even enter the bloodstream. The EPA has documented that exposure to PM~2.5~ is associated with health effects such as elevated risk of premature mortality from cardiovascular diseases or lung cancer, and increased health problems such as asthma attacks.
 
