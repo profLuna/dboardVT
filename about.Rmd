@@ -2,7 +2,7 @@
 title: "About This Website"
 ---
 
-This website supplements a larger project for the [Massachusetts Conservation Law Foundation](https://www.clf.org/serving-new-england/massachusetts/) to provide guidance on policy recommendations for transportation investments that promote social and environmental equity and mitigate or prevent disparities and inequities in access to benefits and exposure to burdens. 
+This website supplements a larger project for the [Massachusetts Conservation Law Foundation](https://www.clf.org/serving-new-england/massachusetts/) to provide guidance on policy recommendations for transportation investments that promote social and environmental equity and mitigate or prevent disparities and inequities in access to benefits and exposure to burdens. Read the [executive summary or full report on Investing for Equity here](../reports/Transportation Equitable Investment Report FINAL.pdf). Learn more about the [other states in New England.](http://dgl.salemstate.edu/luna/InvestingForEquity/ "Investing for Equity in New England landing page")
 
 The objectives of this analysis were to identify the geographic and demographic characteristics of communities that are:
 
@@ -15,10 +15,17 @@ Demographic data for the analysis came from the U.S. Census American Community S
 Air emissions, air pollutant concentrations, and air pollutant risk data came from the [U.S. Environmental Protection Agency's EJSCREEN online tool](https://www.epa.gov/ejscreen). 
 Heat risk analysis was based on satellite-derived land surface temperatures from [NASA's MODIS platform](https://modis.gsfc.nasa.gov/data/dataprod/mod11.php). 
 Evacuation risk was analyzed using the Federal Emergency Management Agency's (FEMA) [National Flood Hazard Layer](https://msc.fema.gov/portal/advanceSearch), and river corridor maps produced by the [Vermont Agency of Natural Resources (ANR)](https://floodready.vermont.gov/flood_protection/river_corridors_floodplains/river_corridors). 
-Transportation data included transit lines and routes from state agencies, average headways based on GTFS data from state transit agencies and open data providers such as Trillium and OpenMobility, [walkability scores](https://www.epa.gov/smartgrowth/smart-location-mapping#walkability) from the EPA, and transportation cost burdens based on the U.S. Department of Housing and Urban Development's (HUD) [Location Affordability Index](https://www.hudexchange.info/programs/location-affordability-index/about/). 
+Transportation data included transit lines and routes from state agencies, average headways based on GTFS data from state transit agencies and open data providers such as Trillium and OpenMobility, [walkability scores](https://www.epa.gov/smartgrowth/smart-location-mapping#walkability) from the EPA, and transportation cost burdens based on the U.S. Department of Housing and Urban Development's (HUD) [Location Affordability Index](https://www.hudexchange.info/programs/location-affordability-index/about/).
 
-This online application is built with [R version 4.0.3 (R Core Team, 2020)](https://www.r-project.org/) using the [R Markdown](https://rmarkdown.rstudio.com/) package in Rstudio. Charts, tables, and maps use [Highcharts](http://www.highcharts.com/),  [DataTables](https://datatables.net/), and [Leaflet.js](http://leafletjs.com/), respectively, all accessed through their corresponding R packages.  
+Details on the analyses for Vermont for specific burden categories are available in technical reports at the following links:
 
-Research code for this analysis will be formally released at a later date.
+* [Transportation](reports/Transport_VermontPDF.pdf)
+* [Emissions](reports/Emissions_VermontPDF.pdf)
+* [Heat](reports/LST_VermontPDF.pdf)
+* [Evacuation](reports/Evacuation_VermontPDF.pdf)
+
+Research code for these analyses is available at https://github.com/profLuna/Investing-for-Equity
+
+This online application is built with [R version 4.0.3 (R Core Team, 2020)](https://www.r-project.org/) using the [R Markdown](https://rmarkdown.rstudio.com/) package in Rstudio. Charts, tables, and maps use [Highcharts](http://www.highcharts.com/),  [DataTables](https://datatables.net/), and [Leaflet.js](http://leafletjs.com/), respectively, all accessed through their corresponding R packages.  The R code for this online dashboard is available at https://github.com/profLuna/dboardVT
 
 Please direct feedback, suggestions, or questions about this website to Marcos Luna - mluna@salemstate.edu
