@@ -1,5 +1,5 @@
 ---
-title: "Cumulative Burdens + Priority Populations"
+title: "Vermont"
 ---
 
 <style type="text/css">
@@ -8,6 +8,9 @@ title: "Cumulative Burdens + Priority Populations"
   margin-left: auto;
   margin-right: auto;
   div.info.legend.leaflet-control br {clear: both;}
+}
+h1.title {
+  text-align: center;
 }
 </style>
 
@@ -161,10 +164,15 @@ senate_districts <- senate_districts %>%
          `4 Burdens` = X4.Burdens,
          `3+ Burdens` = X3..Burdens)
 ```
-
+---
+# Cumulative Burdens + Priority Populations
 Vermont needs progressive and equitable investment in transportation. This investment should prioritize communities that have borne the brunt of burdens from the current transportation system, and which have benefited the least from the same system.
 
-Our analysis shows that areas with high percentages of priority populations and the highest rankings of multiple cumulative environmental burdens fall in the eastern and southern regions of state, particularly around the largest urban areas. Limited English speaking households and people of color most frequently experience the greatest number and types of burdens, especially for air quality, heat, and flood or evacuation risks. Priority populations, especially those over 64 and in lower income households, in rural and suburban areas, lack transportation options and face high costs for transportation.
+Our analysis shows that 
+
+* Areas with high percentages of priority populations and the highest rankings of multiple cumulative environmental burdens fall in the eastern and southern regions of state, particularly around the largest urban areas. 
+* Limited English speaking households and people of color most frequently experience the greatest number and types of burdens, especially for air quality, heat, and flood or evacuation risks. 
+* Priority populations, especially those over 64 and in lower income households, in rural and suburban areas, lack transportation options and face high costs for transportation.
 
 These interactive figures identify communities across Vermont that are most overburdened and most vulnerable to transportation-related environmental burdens or the absence of transportation-related benefits.
 

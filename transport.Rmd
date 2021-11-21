@@ -1,6 +1,11 @@
 ---
-title: "Transport"
+title: "Vermont"
 ---
+<style type="text/css">
+h1.title {
+  text-align: center;
+}
+</style>
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo=FALSE, message=FALSE, warning=FALSE)
@@ -400,10 +405,16 @@ Tcost80th <- round(quantile(vt_blkgrps_sf$hh7_t, 0.8, na.rm = T),1)
 # clean up "vt_blkgrps_sf$",
 rm(list = ls(pattern = paste("muni", "_80th", "headway80th", "_tract", "houseNoBus", "Transport", "houseWalk", "senateNoBus", "senateWalk", "lai_vt_blkgrp", "lai_ToverH", "_noTransit", "vt_blkgrps_sf_noBus", sep = "|"), ))
 ```
-
+---
+# Transport
 The most important benefit of a transportation system is the access it provides to opportunity – economic, educational, health care, civic life, and simple freedom of movement.  Lack of adequate access to transportation hinders these opportunities. 
 
-Most of Vermont’s bus services are concentrated in a handful of cities. Only 38% of the state’s population lives within a reasonable distance of a bus stop or Park and Ride lot. Almost 385,000 people have no physical access to any form of public transit. Transportation cost burdens for moderate income households are generally high across the state. The average transportation cost burden is 28% of household income for moderate income households, which is 75% higher than the US average. There are 101 census tracts where the transportation cost burdens exceeds housing cost burdens. This is 55% of all census tracts in the state.
+* Most of Vermont’s bus services are concentrated in a handful of cities. 
+* Only 38% of the state’s population lives within a reasonable distance of a bus stop or Park and Ride lot. 
+* Almost 385,000 people have no physical access to any form of public transit. 
+* Transportation cost burdens for moderate income households are generally high across the state. 
+* The average transportation cost burden is 28% of household income for moderate income households, which is 75% higher than the US average. 
+* There are 101 census tracts where the transportation cost burdens exceeds housing cost burdens. This is 55% of all census tracts in the state.
 
 These interactive figures identify communities across Vermont that are most underserved and most sensitive to the quality of four transportation metrics: access to public transit, transit headways, neighborhood walkability, and transportation cost burden.  
 

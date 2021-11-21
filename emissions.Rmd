@@ -1,6 +1,11 @@
 ---
-title: "Emissions"
+title: "Vermont"
 ---
+<style type="text/css">
+h1.title {
+  text-align: center;
+}
+</style>
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo=FALSE, message=FALSE, warning=FALSE)
@@ -257,10 +262,12 @@ rm(list = ls(pattern = paste("muni", "_80th", "Emissions",
 # vt_blkgrps_sf <- vt_blkgrps_sf %>%
 #   select(BurdenCount, NAME, REP_DIST, SEN_DIST, TOWN, BURDENSlabel, POPSlabel)
 ```
-
+---
+# Emissions
 Transportation accounts for a significant share of air pollution. 
 
-Concentrations of hazardous air pollutants and associated risks are highest in the eastern half of the state and around the urbanized areas in central and western Vermont. Limited English speaking households and people of color are by far the most exposed to higher levels of air pollutants and are living in close proximity to high traffic corridors.
+* Concentrations of hazardous air pollutants and associated risks are highest in the eastern half of the state and around the urbanized areas in central and western Vermont. 
+* Limited English speaking households and people of color are by far the most exposed to higher levels of air pollutants and are living in close proximity to high traffic corridors.
 
 These interactive figures identify communities across Vermont that are most overburdened and most vulnerable to three transportation-related burdens: PM~2.5~, Diesel Particulate Matter (DPM), and Traffic Volume and Proximity.
 

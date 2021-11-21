@@ -1,6 +1,11 @@
 ---
-title: "Evacuation"
+title: "Vermont"
 ---
+<style type="text/css">
+h1.title {
+  text-align: center;
+}
+</style>
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo=FALSE, message=FALSE, warning=FALSE)
@@ -465,10 +470,12 @@ vt_blkgrps_sf_FLOOD <- vt_blkgrps_sf %>%
 #                              "houseN", "senateN", "houseH", "senateH",
 #                              "vt_blkgrps_sf$", "_list",sep = "|")))
 ```
-
+---
+# Evacuation
 Flood and fluvial erosion are significant risks in Vermont. In the event of extensive flooding, evacuation may be required. For individuals and households with limited mobility, either due to inadequate access to transportation options or because of physical limitations, evacuation presents heightened risk. Evacuation may also prove especially difficult for individuals and households due to limited economic resources, difficulty understanding or accessing information, or low trust in official sources of information. 
 
-Over 61,000 people in Vermont live in a FEMA flood risk zone or river corridor subject to fluvial erosion. Low income persons, households without a car, and people with disabilities are more likely to live in flood zones or river corridors compared to the general population. 
+* Over 61,000 people in Vermont live in a FEMA flood risk zone or river corridor subject to fluvial erosion. 
+* Low income persons, households without a car, and people with disabilities are more likely to live in flood zones or river corridors compared to the general population. 
 
 These interactive figures identify communities across Vermont that are most most vulnerable to the risks of inland flooding or coastal storm surge.
 
